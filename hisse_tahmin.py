@@ -5,7 +5,9 @@ import numpy as np
 from datetime import datetime, timedelta
 import plotly.graph_objects as go
 from sklearn.ensemble import RandomForestRegressor, RandomForestClassifier
+from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score
+from xgboost import XGBRegressor, XGBClassifier
 
 # ---------------------------
 # GÜNCEL BIST 100 HİSSE LİSTESİ
@@ -90,10 +92,14 @@ SEMBOL_ISIM = {h["sembol"]: h["isim"] for h in HISSE_LISTESI}
 # Session state
 if "secili_sembol" not in st.session_state:
     st.session_state.secili_sembol = None
+if "secili_regresyon" not in st.session_state:
+    st.session_state.secili_regresyon = "Random Forest"
+if "secili_siniflandirma" not in st.session_state:
+    st.session_state.secili_siniflandirma = "Random Forest"
 
 st.set_page_config(page_title="Hisse Fiyat Tahmini Pro", layout="wide")
 st.title("📈 Hisse Senedi Fiyat Tahmin Uygulaması (Pro)")
-st.markdown("8 indikatör + ML + olasılık + Al/Sat simülasyonu + Kesişim dedektörü + Yön tahmini + Sağlık Karnesi + Destek/Direnç")
+st.markdown("8 indikatör + ML (seçilebilir) + olasılık + Al/Sat simülasyonu + Kesişim dedektörü + Yön tahmini + Sağlık Karnesi + Destek/Direnç")
 
 # ---------------------------
 # 8 İNDİKATÖR HESAPLAMA
@@ -226,7 +232,8 @@ def hedef_olasilik(df, son_kapanis, gun=50, hedef_yuzde=5):
     olasilik = hedef[ortak].mean() * 100 if ortak.any() else 0
     return olasilik
 
-def ml_tahmin_araligi(ind_df):
+def ml_tahmin_araligi(ind_df, model_secimi="Random Forest"):
+    """Seçilen regresyon modeliyle 5 günlük fiyat tahmin aralığı."""
     ozellikler = ['SMA_50', 'SMA_200', 'MACD', 'RSI', 'ATR', 'Stokastik_K', 'ADX']
     X = ind_df[ozellikler].dropna()
     y = ind_df['Close'].pct_change(5).shift(-5) * 100
@@ -235,26 +242,37 @@ def ml_tahmin_araligi(ind_df):
     if len(X) < 100:
         return None
     son_x = X.iloc[-1:].values
-    model = RandomForestRegressor(n_estimators=100, random_state=42)
+    son_fiyat = ind_df['Close'].iloc[-1]
+
+    # Model seçimi
+    if model_secimi == "Random Forest":
+        model = RandomForestRegressor(n_estimators=100, random_state=42)
+    elif model_secimi == "XGBoost":
+        model = XGBRegressor(n_estimators=100, random_state=42, verbosity=0)
+    else:
+        return None
+
     model.fit(X[:-1], y[:-1])
     tahmin = model.predict(son_x)[0]
     son_20_pred = model.predict(X.iloc[-20:])
     hatalar = y.iloc[-20:].values - son_20_pred
     std_hata = np.std(hatalar)
-    son_fiyat = ind_df['Close'].iloc[-1]
+
     return {
         'alt_fiyat': round(son_fiyat * (1 + (tahmin - 1.96*std_hata)/100), 2),
         'ust_fiyat': round(son_fiyat * (1 + (tahmin + 1.96*std_hata)/100), 2),
         'tahmini_fiyat': round(son_fiyat * (1 + tahmin/100), 2)
     }
 
-def yon_tahmini_modeli(ind_df):
+def yon_tahmini_modeli(ind_df, model_secimi="Random Forest"):
+    """Seçilen sınıflandırma modeliyle 5 günlük yön tahmini."""
     ozellikler = ['SMA_50', 'SMA_200', 'MACD', 'RSI', 'ATR', 'Stokastik_K', 'ADX']
     df = ind_df.dropna(subset=ozellikler).copy()
     df['Hedef'] = (df['Close'].shift(-5) > df['Close']).astype(int)
     df = df.dropna(subset=['Hedef'])
     if len(df) < 200:
         return None
+
     split_idx = int(len(df) * 0.8)
     train = df.iloc[:split_idx]
     test = df.iloc[split_idx:]
@@ -262,11 +280,21 @@ def yon_tahmini_modeli(ind_df):
     y_train = train['Hedef']
     X_test = test[ozellikler]
     y_test = test['Hedef']
-    model = RandomForestClassifier(n_estimators=100, random_state=42)
+    son_x = df[ozellikler].iloc[-1:].values
+
+    # Model seçimi
+    if model_secimi == "Random Forest":
+        model = RandomForestClassifier(n_estimators=100, random_state=42)
+    elif model_secimi == "XGBoost":
+        model = XGBClassifier(n_estimators=100, random_state=42, verbosity=0, use_label_encoder=False, eval_metric='logloss')
+    elif model_secimi == "Lojistik Regresyon":
+        model = LogisticRegression(max_iter=1000)
+    else:
+        return None
+
     model.fit(X_train, y_train)
     y_pred = model.predict(X_test)
     acc = accuracy_score(y_test, y_pred) * 100
-    son_x = df[ozellikler].iloc[-1:].values
     son_tahmin = model.predict(son_x)[0]
     yon = 'YUKARI ↑' if son_tahmin == 1 else 'AŞAĞI ↓'
     return {'dogruluk': round(acc, 1), 'son_tahmin': yon, 'test_boyutu': len(test)}
@@ -388,7 +416,6 @@ def teknik_puanlama(ind_df):
     }
 
 def destek_direnc_bul(df, pencere=5):
-    """Yerel pivot noktalarını tespit eder, seviyeleri döndürür."""
     yuksek = df['High']
     dusuk = df['Low']
     kapanis = df['Close']
@@ -468,21 +495,36 @@ if st.session_state.secili_sembol:
                 st.session_state.pop(key, None)
             st.session_state.secili_sembol = None
     with col2:
-        # Bugünün tarihi varsayılan, en son verileri de alır
         tahmin_tarihi = st.date_input("Tahmin tarihi:",
                                       value=datetime.today(),
                                       max_value=datetime.today())
 
+    # Model seçimleri
+    st.subheader("🤖 Makine Öğrenmesi Model Seçimi")
+    col_m1, col_m2 = st.columns(2)
+    with col_m1:
+        reg_model = st.selectbox("Regresyon Modeli (Fiyat Aralığı)",
+                                 ["Random Forest", "XGBoost"],
+                                 index=0,
+                                 key="reg_model_select")
+        st.session_state.secili_regresyon = reg_model
+    with col_m2:
+        sinif_model = st.selectbox("Sınıflandırma Modeli (Yön Tahmini)",
+                                   ["Random Forest", "XGBoost", "Lojistik Regresyon"],
+                                   index=0,
+                                   key="sinif_model_select")
+        st.session_state.secili_siniflandirma = sinif_model
+
     if st.button("📊 Tahmini Hesapla", type="primary"):
         with st.spinner("Hesaplanıyor..."):
             try:
-                # Sabit 1 yıllık (365 gün) veri çek
-                baslangic = tahmin_tarihi - timedelta(days=365)
-                veri = yf.download(secili, start=baslangic, end=tahmin_tarihi, progress=False)
+                bitis_tarihi = tahmin_tarihi + timedelta(days=1)
+                baslangic = bitis_tarihi - timedelta(days=365)
+                veri = yf.download(secili, start=baslangic, end=bitis_tarihi, progress=False)
                 if veri.empty:
                     st.error("Hisse bulunamadı.")
                 else:
-                    st.info(f"📦 {len(veri)} işlem günü verisi çekildi (1 yıllık).")
+                    st.info(f"📦 {len(veri)} işlem günü verisi çekildi (1 yıllık). Son veri tarihi: {veri.index[-1].strftime('%d.%m.%Y')}")
                     ind_df = tum_indikatorleri_hesapla(veri).dropna()
                     if len(ind_df) < 50:
                         st.error("Yeterli indikatör verisi hesaplanamadı (en az 50 gün gerekli).")
@@ -491,9 +533,9 @@ if st.session_state.secili_sembol:
                         tahmin_gun = fiyat_aralik_tahmini(ind_df, son_kapanis, 1)
                         tahmin_hafta = fiyat_aralik_tahmini(ind_df, son_kapanis, 5)
                         olasilik = hedef_olasilik(veri, son_kapanis)
-                        ml_sonuc = ml_tahmin_araligi(ind_df)
+                        ml_sonuc = ml_tahmin_araligi(ind_df, model_secimi=st.session_state.secili_regresyon)
                         kesişim = kesişim_dedektoru(ind_df)
-                        yon_tahmin = yon_tahmini_modeli(ind_df)
+                        yon_tahmin = yon_tahmini_modeli(ind_df, model_secimi=st.session_state.secili_siniflandirma)
                         teknik_puan = teknik_puanlama(ind_df)
                         guclu_destek, guclu_direnc = destek_direnc_bul(veri.tail(90))
 
@@ -567,13 +609,13 @@ if st.session_state.secili_sembol:
                       f"%{olasilik:.1f}")
 
             if ml_sonuc:
-                st.subheader("🤖 ML 5 Günlük Güven Aralığı (Random Forest %95)")
+                st.subheader(f"🤖 ML 5 Günlük Güven Aralığı ({st.session_state.secili_regresyon} %95)")
                 st.metric("Tahmini Fiyat", f"{ml_sonuc['tahmini_fiyat']} TL")
                 st.write(f"**Alt sınır:** {ml_sonuc['alt_fiyat']} TL / **Üst sınır:** {ml_sonuc['ust_fiyat']} TL")
             else:
                 st.warning("ML güven aralığı için yeterli veri yok.")
 
-            st.subheader("🧠 Yön Tahmini Modeli (Sınıflandırma)")
+            st.subheader(f"🧠 Yön Tahmini Modeli ({st.session_state.secili_siniflandirma})")
             if yon_tahmin is None:
                 st.warning("Yön tahmini için yeterli veri yok (en az 200 gün).")
             else:
