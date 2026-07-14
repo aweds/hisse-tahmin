@@ -576,12 +576,18 @@ if st.session_state.secili_sembol:
         with st.spinner("Hesaplanıyor..."):
             try:
                 bitis_tarihi = tahmin_tarihi + timedelta(days=1)
-                baslangic = bitis_tarihi - timedelta(days=365)
+                # ÖNEMLİ: sadece 1 yıl (365 gün) çekilirse, SMA_200 hesaplanabilmesi için
+                # ilk 200 günün NaN olması gerektiğinden dropna() sonrası geriye ~50 gün kalıyordu.
+                # Bu da ML modellerinin (min. 100-200 gün ister) HİÇBİR ZAMAN eğitilememesine ve
+                # sürekli aynı kural-tabanlı yedek sonuca düşülmesine yol açıyordu.
+                # Ekranlardaki grafikler zaten son 90/10 günü gösterdiği için (tail(90), tail(10))
+                # bu pencereyi büyütmek görünümü bozmaz, sadece modele yeterli veri sağlar.
+                baslangic = bitis_tarihi - timedelta(days=3*365)
                 veri = yf.download(secili, start=baslangic, end=bitis_tarihi, progress=False)
                 if veri.empty:
                     st.error("Hisse bulunamadı.")
                 else:
-                    st.info(f"📦 {len(veri)} işlem günü verisi çekildi (1 yıllık). Son veri tarihi: {veri.index[-1].strftime('%d.%m.%Y')}")
+                    st.info(f"📦 {len(veri)} işlem günü verisi çekildi (indikatör ısınması ve ML eğitimi için 3 yıllık pencere kullanıldı). Son veri tarihi: {veri.index[-1].strftime('%d.%m.%Y')}")
                     ind_df = tum_indikatorleri_hesapla(veri).dropna()
                     if len(ind_df) < 50:
                         st.error("Yeterli indikatör verisi hesaplanamadı (en az 50 gün gerekli).")
