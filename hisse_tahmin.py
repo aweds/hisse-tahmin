@@ -22,7 +22,6 @@ HISSE_LISTESI = [
     {"sembol": "BIMAS.IS", "isim": "BİM Mağazalar"},
     {"sembol": "BRSAN.IS", "isim": "Borusan Mannesmann"},
     {"sembol": "BRYAT.IS", "isim": "Borusan Yatırım"},
-    {"sembol": "BUCKB.IS", "isim": "Buckle (BİST'te Buckle?"},
     {"sembol": "CCOLA.IS", "isim": "Coca-Cola İçecek"},
     {"sembol": "CIMSA.IS", "isim": "Çimsa"},
     {"sembol": "CLEBI.IS", "isim": "Çelebi Hava Servisi"},
@@ -97,13 +96,23 @@ st.title("📈 Hisse Senedi Fiyat Aralık Tahmin Uygulaması (BIST 100)")
 st.markdown("6 indikatör ile **1 gün sonrası** ve **1 hafta sonrası** için fiyat aralığı tahmini.")
 
 # ---------------------------
-# İndikatör hesaplama fonksiyonları (değişmedi)
+# İndikatör hesaplama fonksiyonları (sıkıştırma eklendi)
 # ---------------------------
 def tum_indikatorleri_hesapla(df):
-    kapanis = df['Close']
-    yuksek = df['High']
-    dusuk = df['Low']
-    hacim = df['Volume']
+    # MultiIndex veya DataFrame sütunlarını düzleştir
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.droplevel(1)
+    
+    kapanis = df['Close'].squeeze()
+    yuksek = df['High'].squeeze()
+    dusuk = df['Low'].squeeze()
+    hacim = df['Volume'].squeeze()
+    
+    # Eksik verileri doldur
+    kapanis = kapanis.ffill().dropna()
+    yuksek = yuksek.ffill().dropna()
+    dusuk = dusuk.ffill().dropna()
+    hacim = hacim.fillna(0)
     
     sma_50 = kapanis.rolling(50).mean()
     sma_200 = kapanis.rolling(200).mean()
@@ -148,7 +157,7 @@ def tum_indikatorleri_hesapla(df):
         'Bollinger_Alt': bollinger_alt,
         'ATR': atr,
         'OBV': obv
-    }, index=df.index)
+    }, index=kapanis.index)
     return indikatorler
 
 def fiyat_aralik_tahmini(ind_df, son_kapanis, gun_sayisi=1):
@@ -243,7 +252,10 @@ if st.session_state.secili_sembol:
     with col1:
         if st.button("🔄 Farklı hisse seç"):
             st.session_state.secili_sembol = None
-            st.rerun()
+            try:
+                st.rerun()
+            except AttributeError:
+                st.experimental_rerun()
     with col2:
         tahmin_tarihi = st.date_input(
             "Tahmin hangi tarih itibarıyla yapılsın? (dünün verisiyle)",
@@ -257,52 +269,57 @@ if st.session_state.secili_sembol:
             if veri.empty:
                 st.error("Hisse bulunamadı veya yeterli veri yok.")
             else:
+                # Veri temizliği
                 ind_df = tum_indikatorleri_hesapla(veri)
-                son_gun = ind_df.dropna().iloc[-1]
-                son_kapanis = son_gun['Close']
-                
-                tahmin_gun = fiyat_aralik_tahmini(ind_df.dropna(), son_kapanis, gun_sayisi=1)
-                tahmin_hafta = fiyat_aralik_tahmini(ind_df.dropna(), son_kapanis, gun_sayisi=5)
-                
-                gostergeler = pd.DataFrame({
-                    'İndikatör': ['SMA 50', 'SMA 200', 'MACD', 'MACD Sinyal', 'RSI',
-                                  'Bollinger Üst', 'Bollinger Alt', 'ATR', 'OBV'],
-                    'Son Değer': [round(son_gun['SMA_50'],2), round(son_gun['SMA_200'],2),
-                                  round(son_gun['MACD'],2), round(son_gun['MACD_Sinyal'],2),
-                                  round(son_gun['RSI'],2), round(son_gun['Bollinger_Ust'],2),
-                                  round(son_gun['Bollinger_Alt'],2), round(son_gun['ATR'],2),
-                                  round(son_gun['OBV'],2)]
-                })
-                
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    st.subheader("📊 Son Kapanış")
-                    st.metric("Fiyat", f"{son_kapanis:.2f} TL")
-                with col2:
-                    st.subheader("🔮 1 Gün Sonrası Tahmin")
-                    st.markdown(f"**Yön:** {tahmin_gun['yon']} (Güven: %{tahmin_gun['guven_skoru']:.0f})")
-                    st.metric("Tahmini Aralık", f"{tahmin_gun['dusuk']} - {tahmin_gun['yuksek']}")
-                    st.caption(f"Orta Nokta: {tahmin_gun['tahmini_kapanis']}")
-                with col3:
-                    st.subheader("🗓️ 1 Hafta Sonrası Tahmin")
-                    st.markdown(f"**Yön:** {tahmin_hafta['yon']} (Güven: %{tahmin_hafta['guven_skoru']:.0f})")
-                    st.metric("Tahmini Aralık", f"{tahmin_hafta['dusuk']} - {tahmin_hafta['yuksek']}")
-                    st.caption(f"Orta Nokta: {tahmin_hafta['tahmini_kapanis']}")
-                
-                st.subheader("📋 Kullanılan İndikatör Değerleri")
-                st.table(gostergeler)
-                
-                st.subheader("📈 Son Dönem Fiyat Hareketi ve Bollinger Bantları")
-                grafik_verisi = ind_df.dropna().tail(90)
-                import plotly.graph_objects as go
-                fig = go.Figure()
-                fig.add_trace(go.Scatter(x=grafik_verisi.index, y=grafik_verisi['Close'], name='Kapanış'))
-                fig.add_trace(go.Scatter(x=grafik_verisi.index, y=grafik_verisi['Bollinger_Ust'],
-                                         line=dict(dash='dash'), name='Bollinger Üst'))
-                fig.add_trace(go.Scatter(x=grafik_verisi.index, y=grafik_verisi['Bollinger_Alt'],
-                                         line=dict(dash='dash'), name='Bollinger Alt'))
-                fig.update_layout(height=500)
-                st.plotly_chart(fig, use_container_width=True)
-                
+                ind_df = ind_df.dropna()
+                if len(ind_df) < 50:
+                    st.error("Yeterli veri hesaplanamadı (en az 50 işlem günü gerekli).")
+                else:
+                    son_gun = ind_df.iloc[-1]
+                    son_kapanis = son_gun['Close']
+                    
+                    tahmin_gun = fiyat_aralik_tahmini(ind_df, son_kapanis, gun_sayisi=1)
+                    tahmin_hafta = fiyat_aralik_tahmini(ind_df, son_kapanis, gun_sayisi=5)
+                    
+                    gostergeler = pd.DataFrame({
+                        'İndikatör': ['SMA 50', 'SMA 200', 'MACD', 'MACD Sinyal', 'RSI',
+                                      'Bollinger Üst', 'Bollinger Alt', 'ATR', 'OBV'],
+                        'Son Değer': [round(son_gun['SMA_50'],2), round(son_gun['SMA_200'],2),
+                                      round(son_gun['MACD'],2), round(son_gun['MACD_Sinyal'],2),
+                                      round(son_gun['RSI'],2), round(son_gun['Bollinger_Ust'],2),
+                                      round(son_gun['Bollinger_Alt'],2), round(son_gun['ATR'],2),
+                                      round(son_gun['OBV'],2)]
+                    })
+                    
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        st.subheader("📊 Son Kapanış")
+                        st.metric("Fiyat", f"{son_kapanis:.2f} TL")
+                    with col2:
+                        st.subheader("🔮 1 Gün Sonrası Tahmin")
+                        st.markdown(f"**Yön:** {tahmin_gun['yon']} (Güven: %{tahmin_gun['guven_skoru']:.0f})")
+                        st.metric("Tahmini Aralık", f"{tahmin_gun['dusuk']} - {tahmin_gun['yuksek']}")
+                        st.caption(f"Orta Nokta: {tahmin_gun['tahmini_kapanis']}")
+                    with col3:
+                        st.subheader("🗓️ 1 Hafta Sonrası Tahmin")
+                        st.markdown(f"**Yön:** {tahmin_hafta['yon']} (Güven: %{tahmin_hafta['guven_skoru']:.0f})")
+                        st.metric("Tahmini Aralık", f"{tahmin_hafta['dusuk']} - {tahmin_hafta['yuksek']}")
+                        st.caption(f"Orta Nokta: {tahmin_hafta['tahmini_kapanis']}")
+                    
+                    st.subheader("📋 Kullanılan İndikatör Değerleri")
+                    st.table(gostergeler)
+                    
+                    st.subheader("📈 Son Dönem Fiyat Hareketi ve Bollinger Bantları")
+                    grafik_verisi = ind_df.dropna().tail(90)
+                    import plotly.graph_objects as go
+                    fig = go.Figure()
+                    fig.add_trace(go.Scatter(x=grafik_verisi.index, y=grafik_verisi['Close'], name='Kapanış'))
+                    fig.add_trace(go.Scatter(x=grafik_verisi.index, y=grafik_verisi['Bollinger_Ust'],
+                                             line=dict(dash='dash'), name='Bollinger Üst'))
+                    fig.add_trace(go.Scatter(x=grafik_verisi.index, y=grafik_verisi['Bollinger_Alt'],
+                                             line=dict(dash='dash'), name='Bollinger Alt'))
+                    fig.update_layout(height=500)
+                    st.plotly_chart(fig, use_container_width=True)
+                    
         except Exception as e:
             st.error(f"Hata oluştu: {e}")
