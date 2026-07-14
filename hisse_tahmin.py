@@ -1,4 +1,3 @@
-<details> <summary>📄 hisse_tahmin.py kodunu göster (tıkla)</summary>
 import streamlit as st
 import yfinance as yf
 import pandas as pd
@@ -171,4 +170,3 @@ if st.button("Tahmini Hesapla"):
             
     except Exception as e:
         st.error(f"Hata oluştu: {e}")
-</details>
