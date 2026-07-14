@@ -8,6 +8,7 @@ from sklearn.ensemble import RandomForestRegressor, RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score
 from xgboost import XGBRegressor, XGBClassifier
+from lightgbm import LGBMRegressor, LGBMClassifier
 
 # ---------------------------
 # GÜNCEL BIST 100 HİSSE LİSTESİ
@@ -99,7 +100,7 @@ if "secili_siniflandirma" not in st.session_state:
 
 st.set_page_config(page_title="Hisse Fiyat Tahmini Pro", layout="wide")
 st.title("📈 Hisse Senedi Fiyat Tahmin Uygulaması (Pro)")
-st.markdown("8 indikatör + ML (seçilebilir) + olasılık + Al/Sat simülasyonu + Kesişim dedektörü + Yön tahmini + Sağlık Karnesi + Destek/Direnç")
+st.markdown("8 indikatör + ML (RF, XGBoost, LightGBM, Logistic) + olasılık + Al/Sat + Kesişim + Sağlık + Destek/Direnç")
 
 # ---------------------------
 # 8 İNDİKATÖR HESAPLAMA
@@ -233,7 +234,6 @@ def hedef_olasilik(df, son_kapanis, gun=50, hedef_yuzde=5):
     return olasilik
 
 def ml_tahmin_araligi(ind_df, model_secimi="Random Forest"):
-    """Seçilen regresyon modeliyle 5 günlük fiyat tahmin aralığı."""
     ozellikler = ['SMA_50', 'SMA_200', 'MACD', 'RSI', 'ATR', 'Stokastik_K', 'ADX']
     X = ind_df[ozellikler].dropna()
     y = ind_df['Close'].pct_change(5).shift(-5) * 100
@@ -244,11 +244,12 @@ def ml_tahmin_araligi(ind_df, model_secimi="Random Forest"):
     son_x = X.iloc[-1:].values
     son_fiyat = ind_df['Close'].iloc[-1]
 
-    # Model seçimi
     if model_secimi == "Random Forest":
         model = RandomForestRegressor(n_estimators=100, random_state=42)
     elif model_secimi == "XGBoost":
         model = XGBRegressor(n_estimators=100, random_state=42, verbosity=0)
+    elif model_secimi == "LightGBM":
+        model = LGBMRegressor(n_estimators=100, random_state=42, verbose=-1)
     else:
         return None
 
@@ -265,7 +266,6 @@ def ml_tahmin_araligi(ind_df, model_secimi="Random Forest"):
     }
 
 def yon_tahmini_modeli(ind_df, model_secimi="Random Forest"):
-    """Seçilen sınıflandırma modeliyle 5 günlük yön tahmini."""
     ozellikler = ['SMA_50', 'SMA_200', 'MACD', 'RSI', 'ATR', 'Stokastik_K', 'ADX']
     df = ind_df.dropna(subset=ozellikler).copy()
     df['Hedef'] = (df['Close'].shift(-5) > df['Close']).astype(int)
@@ -282,11 +282,12 @@ def yon_tahmini_modeli(ind_df, model_secimi="Random Forest"):
     y_test = test['Hedef']
     son_x = df[ozellikler].iloc[-1:].values
 
-    # Model seçimi
     if model_secimi == "Random Forest":
         model = RandomForestClassifier(n_estimators=100, random_state=42)
     elif model_secimi == "XGBoost":
         model = XGBClassifier(n_estimators=100, random_state=42, verbosity=0, use_label_encoder=False, eval_metric='logloss')
+    elif model_secimi == "LightGBM":
+        model = LGBMClassifier(n_estimators=100, random_state=42, verbose=-1)
     elif model_secimi == "Lojistik Regresyon":
         model = LogisticRegression(max_iter=1000)
     else:
@@ -504,13 +505,13 @@ if st.session_state.secili_sembol:
     col_m1, col_m2 = st.columns(2)
     with col_m1:
         reg_model = st.selectbox("Regresyon Modeli (Fiyat Aralığı)",
-                                 ["Random Forest", "XGBoost"],
+                                 ["Random Forest", "XGBoost", "LightGBM"],
                                  index=0,
                                  key="reg_model_select")
         st.session_state.secili_regresyon = reg_model
     with col_m2:
         sinif_model = st.selectbox("Sınıflandırma Modeli (Yön Tahmini)",
-                                   ["Random Forest", "XGBoost", "Lojistik Regresyon"],
+                                   ["Random Forest", "XGBoost", "LightGBM", "Lojistik Regresyon"],
                                    index=0,
                                    key="sinif_model_select")
         st.session_state.secili_siniflandirma = sinif_model
