@@ -93,7 +93,7 @@ if "secili_sembol" not in st.session_state:
 
 st.set_page_config(page_title="Hisse Fiyat Tahmini Pro", layout="wide")
 st.title("📈 Hisse Senedi Fiyat Tahmin Uygulaması (Pro)")
-st.markdown("8 indikatör + ML güven aralığı + olasılık + Al/Sat simülasyonu + Kesişim dedektörü + Yön tahmini")
+st.markdown("8 indikatör + ML + olasılık + Al/Sat simülasyonu + Kesişim dedektörü + Yön tahmini + Sağlık Karnesi")
 
 # ---------------------------
 # 8 İNDİKATÖR HESAPLAMA
@@ -161,7 +161,10 @@ def tum_indikatorleri_hesapla(df):
         'Bollinger_Ust': bollinger_ust, 'Bollinger_Alt': bollinger_alt,
         'ATR': atr, 'OBV': obv,
         'Stokastik_K': stok_k, 'Stokastik_D': stok_d,
-        'ADX': adx
+        'ADX': adx,
+        'Volume': hacim,
+        'High': yuksek,
+        'Low': dusuk
     }, index=kapanis.index)
     return indikatorler
 
@@ -246,14 +249,12 @@ def ml_tahmin_araligi(ind_df):
     }
 
 def yon_tahmini_modeli(ind_df):
-    """5 gün sonraki yönü sınıflandırır ve doğruluk oranını döndürür."""
     ozellikler = ['SMA_50', 'SMA_200', 'MACD', 'RSI', 'ATR', 'Stokastik_K', 'ADX']
     df = ind_df.dropna(subset=ozellikler).copy()
-    df['Hedef'] = (df['Close'].shift(-5) > df['Close']).astype(int)  # 1: yukarı, 0: aşağı
+    df['Hedef'] = (df['Close'].shift(-5) > df['Close']).astype(int)
     df = df.dropna(subset=['Hedef'])
     if len(df) < 200:
         return None
-    # Zamansal bölme: son %20 test, ilk %80 eğitim
     split_idx = int(len(df) * 0.8)
     train = df.iloc[:split_idx]
     test = df.iloc[split_idx:]
@@ -265,7 +266,6 @@ def yon_tahmini_modeli(ind_df):
     model.fit(X_train, y_train)
     y_pred = model.predict(X_test)
     acc = accuracy_score(y_test, y_pred) * 100
-    # En son veri noktası için tahmin
     son_x = df[ozellikler].iloc[-1:].values
     son_tahmin = model.predict(son_x)[0]
     yon = 'YUKARI ↑' if son_tahmin == 1 else 'AŞAĞI ↓'
@@ -341,6 +341,65 @@ def kesişim_dedektoru(ind_df):
     return {'tip': tip, 'gun': round(kalan_gun), 'son_fark': son_fark}
 
 # ---------------------------
+# YENİ: TEMATİK PUANLAMA (SAĞLIK KARNESİ)
+# ---------------------------
+def teknik_puanlama(ind_df):
+    """0-10 arası puanlar: trend, momentum, volatilite, hacim ve genel."""
+    son = ind_df.iloc[-1]
+
+    # Trend puanı (0-10)
+    trend = 0
+    if son['SMA_50'] > son['SMA_200']: trend += 4
+    if son['Close'] > son['SMA_50']: trend += 3
+    if son['Close'] > son['SMA_200']: trend += 3
+    trend = min(trend, 10)
+
+    # Momentum puanı (0-10)
+    momentum = 0
+    rsi = son['RSI']
+    if rsi > 60: momentum += 4
+    elif rsi > 50: momentum += 3
+    elif rsi > 30: momentum += 1
+    else: momentum += 2  # aşırı satım, dönüş potansiyeli
+    if son['MACD'] > son['MACD_Sinyal']: momentum += 4
+    if son['Stokastik_K'] > son['Stokastik_D']: momentum += 2
+    momentum = min(momentum, 10)
+
+    # Volatilite / Destek-Direnç puanı (0-10)
+    volatilite = 5  # nötr başlangıç
+    fiyat = son['Close']
+    sma20 = (son['Bollinger_Ust'] + son['Bollinger_Alt']) / 2
+    bant_genisligi = (son['Bollinger_Ust'] - son['Bollinger_Alt']) / sma20 * 100
+    # Fiyatın orta banda yakınlığı (+3 puan)
+    fark_yuzde = abs(fiyat - sma20) / sma20 * 100
+    if fark_yuzde < 1: volatilite += 3
+    elif fark_yuzde < 2: volatilite += 1
+    # Bollinger genişliği dar ise sıkışma (breakout beklentisi) +2
+    if bant_genisligi < 5: volatilite += 2
+    # ATR son 20 gün ortalamasına göre düşükse istikrar +2
+    ortalama_atr = ind_df['ATR'].rolling(20).mean().iloc[-1]
+    if son['ATR'] < ortalama_atr: volatilite += 2
+    else: volatilite -= 1
+    volatilite = max(0, min(volatilite, 10))
+
+    # Hacim puanı (0-10)
+    hacim_p = 0
+    obv_ortalama = ind_df['OBV'].rolling(5).mean().iloc[-1]
+    if son['OBV'] > obv_ortalama: hacim_p += 5
+    ortalama_hacim = ind_df['Volume'].rolling(20).mean().iloc[-1]
+    if son['Volume'] > ortalama_hacim: hacim_p += 5
+    hacim_p = min(hacim_p, 10)
+
+    genel = round((trend + momentum + volatilite + hacim_p) / 4, 1)
+    return {
+        'trend': trend,
+        'momentum': momentum,
+        'volatilite': volatilite,
+        'hacim': hacim_p,
+        'genel': genel
+    }
+
+# ---------------------------
 # ARAYÜZ
 # ---------------------------
 st.subheader("🔍 Hisse Seçimi")
@@ -374,7 +433,7 @@ if st.session_state.secili_sembol:
         if st.button("🔄 Farklı hisse seç"):
             for key in ["tahmin_gun", "tahmin_hafta", "olasilik", "ml_sonuc", "ind_df",
                         "son_kapanis", "veri", "sim_islemler", "sim_metrikler", "sim_ind_sim",
-                        "kesişim_sonuc", "yon_tahmin"]:
+                        "kesişim_sonuc", "yon_tahmin", "teknik_puan"]:
                 st.session_state.pop(key, None)
             st.session_state.secili_sembol = None
     with col2:
@@ -400,6 +459,7 @@ if st.session_state.secili_sembol:
                         ml_sonuc = ml_tahmin_araligi(ind_df)
                         kesişim = kesişim_dedektoru(ind_df)
                         yon_tahmin = yon_tahmini_modeli(ind_df)
+                        teknik_puan = teknik_puanlama(ind_df)
 
                         st.session_state["tahmin_gun"] = tahmin_gun
                         st.session_state["tahmin_hafta"] = tahmin_hafta
@@ -410,6 +470,7 @@ if st.session_state.secili_sembol:
                         st.session_state["veri"] = veri
                         st.session_state["kesişim_sonuc"] = kesişim
                         st.session_state["yon_tahmin"] = yon_tahmin
+                        st.session_state["teknik_puan"] = teknik_puan
                         st.rerun()
             except Exception as e:
                 st.error(f"Hata oluştu: {e}")
@@ -424,12 +485,14 @@ if st.session_state.secili_sembol:
         veri = st.session_state["veri"]
         kesişim = st.session_state.get("kesişim_sonuc", None)
         yon_tahmin = st.session_state.get("yon_tahmin", None)
+        teknik_puan = st.session_state.get("teknik_puan", None)
 
-        tab1, tab2, tab3, tab4 = st.tabs([
+        tab1, tab2, tab3, tab4, tab5 = st.tabs([
             "📋 Tahmin Sonuçları",
             "📈 İleri Analiz",
             "📊 İndikatörler",
-            "📉 Strateji Simülasyonu"
+            "📉 Strateji Simülasyonu",
+            "🏥 Sağlık Karnesi"
         ])
 
         with tab1:
@@ -472,7 +535,6 @@ if st.session_state.secili_sembol:
             else:
                 st.warning("ML güven aralığı için yeterli veri yok.")
 
-            # ---- Yeni: Yön Tahmini Modeli ----
             st.subheader("🧠 Yön Tahmini Modeli (Sınıflandırma)")
             if yon_tahmin is None:
                 st.warning("Yön tahmini için yeterli veri yok (en az 200 gün).")
@@ -484,7 +546,6 @@ if st.session_state.secili_sembol:
                 with col_yt2:
                     st.metric("5 Günlük Yön Tahmini", yon_tahmin['son_tahmin'])
 
-            # ---- Kesişim Dedektörü ----
             st.subheader("⚡ Hareketli Ortalama Kesişim Dedektörü")
             if kesişim is None:
                 st.warning("Kesişim analizi için yeterli veri yok.")
@@ -589,3 +650,34 @@ if st.session_state.secili_sembol:
                     st.subheader("İşlem Geçmişi")
                     islem_df = pd.DataFrame(islemler)
                     st.dataframe(islem_df, use_container_width=True)
+
+        with tab5:
+            st.subheader("🏥 Teknik Sağlık Karnesi (0-10 Puan)")
+            if teknik_puan is None:
+                st.warning("Henüz bir analiz yapılmadı.")
+            else:
+                # Genel puan göstergesi
+                genel = teknik_puan['genel']
+                renk = 'green' if genel >= 7 else ('orange' if genel >= 4 else 'red')
+                st.markdown(f"### Genel Teknik Puan: **: {genel} / 10**")
+                st.progress(genel / 10)
+
+                col_p1, col_p2 = st.columns(2)
+                with col_p1:
+                    st.markdown("**Trend Puanı**")
+                    st.progress(teknik_puan['trend'] / 10)
+                    st.write(f"{teknik_puan['trend']}/10")
+
+                    st.markdown("**Momentum Puanı**")
+                    st.progress(teknik_puan['momentum'] / 10)
+                    st.write(f"{teknik_puan['momentum']}/10")
+                with col_p2:
+                    st.markdown("**Volatilite/Destek-Direnç Puanı**")
+                    st.progress(teknik_puan['volatilite'] / 10)
+                    st.write(f"{teknik_puan['volatilite']}/10")
+
+                    st.markdown("**Hacim Puanı**")
+                    st.progress(teknik_puan['hacim'] / 10)
+                    st.write(f"{teknik_puan['hacim']}/10")
+
+                st.caption("Puanlama: 0-3 Zayıf, 4-6 Orta, 7-10 Güçlü")
