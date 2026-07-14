@@ -96,10 +96,9 @@ st.title("📈 Hisse Senedi Fiyat Aralık Tahmin Uygulaması (BIST 100)")
 st.markdown("6 indikatör ile **1 gün sonrası** ve **1 hafta sonrası** için fiyat aralığı tahmini.")
 
 # ---------------------------
-# İndikatör hesaplama fonksiyonları (sıkıştırma eklendi)
+# İndikatör hesaplama fonksiyonları
 # ---------------------------
 def tum_indikatorleri_hesapla(df):
-    # MultiIndex veya DataFrame sütunlarını düzleştir
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.droplevel(1)
     
@@ -108,7 +107,6 @@ def tum_indikatorleri_hesapla(df):
     dusuk = df['Low'].squeeze()
     hacim = df['Volume'].squeeze()
     
-    # Eksik verileri doldur
     kapanis = kapanis.ffill().dropna()
     yuksek = yuksek.ffill().dropna()
     dusuk = dusuk.ffill().dropna()
@@ -217,6 +215,11 @@ arama_metni = st.text_input("Hisse adı veya kodu yazın:", placeholder="Örn: T
 
 def secim_yap():
     st.session_state.secili_sembol = st.session_state.radio_hisse["sembol"]
+    # Seçimden sonra sayfayı yenile ki alt kısım görünsün
+    try:
+        st.rerun()
+    except AttributeError:
+        st.experimental_rerun()
 
 if arama_metni:
     arama_lower = arama_metni.lower()
@@ -269,7 +272,6 @@ if st.session_state.secili_sembol:
             if veri.empty:
                 st.error("Hisse bulunamadı veya yeterli veri yok.")
             else:
-                # Veri temizliği
                 ind_df = tum_indikatorleri_hesapla(veri)
                 ind_df = ind_df.dropna()
                 if len(ind_df) < 50:
