@@ -6,6 +6,8 @@ from datetime import datetime, timedelta
 import plotly.graph_objects as go
 from sklearn.ensemble import RandomForestRegressor, RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
+from sklearn.neighbors import KNeighborsRegressor, KNeighborsClassifier
+from sklearn.svm import SVR, SVC
 from sklearn.metrics import accuracy_score
 from xgboost import XGBRegressor, XGBClassifier
 from lightgbm import LGBMRegressor, LGBMClassifier
@@ -100,7 +102,7 @@ if "secili_siniflandirma" not in st.session_state:
 
 st.set_page_config(page_title="Hisse Fiyat Tahmini Pro", layout="wide")
 st.title("📈 Hisse Senedi Fiyat Tahmin Uygulaması (Pro)")
-st.markdown("8 indikatör + ML (RF, XGBoost, LightGBM, Logistic) + olasılık + Al/Sat + Kesişim + Sağlık + Destek/Direnç")
+st.markdown("8 indikatör + ML (RF, XGBoost, LightGBM, KNN, SVM, Lojistik) + olasılık + Al/Sat + Kesişim + Sağlık + Destek/Direnç")
 
 # ---------------------------
 # 8 İNDİKATÖR HESAPLAMA
@@ -250,6 +252,10 @@ def ml_tahmin_araligi(ind_df, model_secimi="Random Forest"):
         model = XGBRegressor(n_estimators=100, random_state=42, verbosity=0)
     elif model_secimi == "LightGBM":
         model = LGBMRegressor(n_estimators=100, random_state=42, verbose=-1)
+    elif model_secimi == "KNN":
+        model = KNeighborsRegressor(n_neighbors=5)
+    elif model_secimi == "SVM":
+        model = SVR(kernel='rbf')
     else:
         return None
 
@@ -290,6 +296,10 @@ def yon_tahmini_modeli(ind_df, model_secimi="Random Forest"):
         model = LGBMClassifier(n_estimators=100, random_state=42, verbose=-1)
     elif model_secimi == "Lojistik Regresyon":
         model = LogisticRegression(max_iter=1000)
+    elif model_secimi == "KNN":
+        model = KNeighborsClassifier(n_neighbors=5)
+    elif model_secimi == "SVM":
+        model = SVC(kernel='rbf', probability=True)
     else:
         return None
 
@@ -505,13 +515,13 @@ if st.session_state.secili_sembol:
     col_m1, col_m2 = st.columns(2)
     with col_m1:
         reg_model = st.selectbox("Regresyon Modeli (Fiyat Aralığı)",
-                                 ["Random Forest", "XGBoost", "LightGBM"],
+                                 ["Random Forest", "XGBoost", "LightGBM", "KNN", "SVM"],
                                  index=0,
                                  key="reg_model_select")
         st.session_state.secili_regresyon = reg_model
     with col_m2:
         sinif_model = st.selectbox("Sınıflandırma Modeli (Yön Tahmini)",
-                                   ["Random Forest", "XGBoost", "LightGBM", "Lojistik Regresyon"],
+                                   ["Random Forest", "XGBoost", "LightGBM", "Lojistik Regresyon", "KNN", "SVM"],
                                    index=0,
                                    key="sinif_model_select")
         st.session_state.secili_siniflandirma = sinif_model
