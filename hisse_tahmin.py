@@ -9,6 +9,8 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.neighbors import KNeighborsRegressor, KNeighborsClassifier
 from sklearn.svm import SVR, SVC
 from sklearn.metrics import accuracy_score
+from sklearn.preprocessing import StandardScaler
+from sklearn.pipeline import Pipeline
 from xgboost import XGBRegressor, XGBClassifier
 from lightgbm import LGBMRegressor, LGBMClassifier
 
@@ -231,46 +233,81 @@ def hedef_olasilik(df, son_kapanis, gun=50, hedef_yuzde=5):
     olasilik = hedef[ortak].mean() * 100 if ortak.any() else 0
     return olasilik
 
-def ml_tahmin_araligi(ind_df, model_secimi="Random Forest"):
+def regresyon_modeli_olustur(model_secimi):
+    """Her model gerçekten farklı davranacak şekilde kuruluyor.
+    KNN ve SVM mesafe/çekirdek tabanlı olduğu için StandardScaler ile pipeline'a alınıyor,
+    aksi halde RSI (0-100), ATR, ADX gibi çok farklı ölçekli sütunlar modeli bozuyordu."""
+    if model_secimi == "Random Forest":
+        return RandomForestRegressor(n_estimators=300, max_depth=6, min_samples_leaf=3, random_state=42)
+    elif model_secimi == "XGBoost":
+        return XGBRegressor(n_estimators=300, max_depth=4, learning_rate=0.05, subsample=0.8,
+                             colsample_bytree=0.8, random_state=42, verbosity=0)
+    elif model_secimi == "LightGBM":
+        return LGBMRegressor(n_estimators=300, max_depth=4, learning_rate=0.05, subsample=0.8,
+                              colsample_bytree=0.8, random_state=42, verbose=-1)
+    elif model_secimi == "KNN":
+        return Pipeline([("scaler", StandardScaler()), ("model", KNeighborsRegressor(n_neighbors=7))])
+    elif model_secimi == "SVM":
+        return Pipeline([("scaler", StandardScaler()), ("model", SVR(kernel='rbf', C=10, epsilon=0.05))])
+    return None
+
+def siniflandirma_modeli_olustur(model_secimi):
+    if model_secimi == "Random Forest":
+        return RandomForestClassifier(n_estimators=300, max_depth=6, min_samples_leaf=3, random_state=42)
+    elif model_secimi == "XGBoost":
+        return XGBClassifier(n_estimators=300, max_depth=4, learning_rate=0.05, subsample=0.8,
+                              colsample_bytree=0.8, random_state=42, verbosity=0, eval_metric='logloss')
+    elif model_secimi == "LightGBM":
+        return LGBMClassifier(n_estimators=300, max_depth=4, learning_rate=0.05, subsample=0.8,
+                               colsample_bytree=0.8, random_state=42, verbose=-1)
+    elif model_secimi == "Lojistik Regresyon":
+        return Pipeline([("scaler", StandardScaler()), ("model", LogisticRegression(max_iter=1000))])
+    elif model_secimi == "KNN":
+        return Pipeline([("scaler", StandardScaler()), ("model", KNeighborsClassifier(n_neighbors=7))])
+    elif model_secimi == "SVM":
+        return Pipeline([("scaler", StandardScaler()), ("model", SVC(kernel='rbf', probability=True, C=10))])
+    return None
+
+def ml_tahmin_araligi(ind_df, model_secimi="Random Forest", ufuk_gun=5):
+    """ufuk_gun: kaç işlem günü sonrasını tahmin edeceği (1 = ertesi gün, 5 = 1 hafta sonrası).
+    Bu sayede 'gün' ve 'hafta' tahminleri de artık FARKLI modellerden/hedeflerden geliyor."""
     ozellikler = ['SMA_50', 'SMA_200', 'MACD', 'RSI', 'ATR', 'Stokastik_K', 'ADX']
     X = ind_df[ozellikler].dropna()
-    y = ind_df['Close'].pct_change(5).shift(-5) * 100
+    y = ind_df['Close'].pct_change(ufuk_gun).shift(-ufuk_gun) * 100
     ortak = X.index.intersection(y.dropna().index)
     X, y = X.loc[ortak], y.loc[ortak]
     if len(X) < 100:
         return None
-    son_x = X.iloc[-1:].values
+    son_x = X.iloc[-1:]
     son_fiyat = ind_df['Close'].iloc[-1]
 
-    if model_secimi == "Random Forest":
-        model = RandomForestRegressor(n_estimators=100, random_state=42)
-    elif model_secimi == "XGBoost":
-        model = XGBRegressor(n_estimators=100, random_state=42, verbosity=0)
-    elif model_secimi == "LightGBM":
-        model = LGBMRegressor(n_estimators=100, random_state=42, verbose=-1)
-    elif model_secimi == "KNN":
-        model = KNeighborsRegressor(n_neighbors=5)
-    elif model_secimi == "SVM":
-        model = SVR(kernel='rbf')
-    else:
+    model = regresyon_modeli_olustur(model_secimi)
+    if model is None:
         return None
 
-    model.fit(X[:-1], y[:-1])
+    model.fit(X.iloc[:-1], y.iloc[:-1])
     tahmin = model.predict(son_x)[0]
     son_20_pred = model.predict(X.iloc[-20:])
     hatalar = y.iloc[-20:].values - son_20_pred
     std_hata = np.std(hatalar)
+    if std_hata < 1e-6:
+        std_hata = abs(tahmin) * 0.1 + 0.1  # sabit/aşırı düşük hata durumunda aralık sıfırlanmasın
+
+    alt = son_fiyat * (1 + (tahmin - 1.96*std_hata)/100)
+    ust = son_fiyat * (1 + (tahmin + 1.96*std_hata)/100)
+    alt, ust = min(alt, ust), max(alt, ust)
 
     return {
-        'alt_fiyat': round(son_fiyat * (1 + (tahmin - 1.96*std_hata)/100), 2),
-        'ust_fiyat': round(son_fiyat * (1 + (tahmin + 1.96*std_hata)/100), 2),
-        'tahmini_fiyat': round(son_fiyat * (1 + tahmin/100), 2)
+        'alt_fiyat': round(alt, 2),
+        'ust_fiyat': round(ust, 2),
+        'tahmini_fiyat': round(son_fiyat * (1 + tahmin/100), 2),
+        'beklenen_getiri': round(tahmin, 2)
     }
 
-def yon_tahmini_modeli(ind_df, model_secimi="Random Forest"):
+def yon_tahmini_modeli(ind_df, model_secimi="Random Forest", ufuk_gun=5):
     ozellikler = ['SMA_50', 'SMA_200', 'MACD', 'RSI', 'ATR', 'Stokastik_K', 'ADX']
     df = ind_df.dropna(subset=ozellikler).copy()
-    df['Hedef'] = (df['Close'].shift(-5) > df['Close']).astype(int)
+    df['Hedef'] = (df['Close'].shift(-ufuk_gun) > df['Close']).astype(int)
     df = df.dropna(subset=['Hedef'])
     if len(df) < 200:
         return None
@@ -282,21 +319,10 @@ def yon_tahmini_modeli(ind_df, model_secimi="Random Forest"):
     y_train = train['Hedef']
     X_test = test[ozellikler]
     y_test = test['Hedef']
-    son_x = df[ozellikler].iloc[-1:].values
+    son_x = df[ozellikler].iloc[-1:]
 
-    if model_secimi == "Random Forest":
-        model = RandomForestClassifier(n_estimators=100, random_state=42)
-    elif model_secimi == "XGBoost":
-        model = XGBClassifier(n_estimators=100, random_state=42, verbosity=0, use_label_encoder=False, eval_metric='logloss')
-    elif model_secimi == "LightGBM":
-        model = LGBMClassifier(n_estimators=100, random_state=42, verbose=-1)
-    elif model_secimi == "Lojistik Regresyon":
-        model = LogisticRegression(max_iter=1000)
-    elif model_secimi == "KNN":
-        model = KNeighborsClassifier(n_neighbors=5)
-    elif model_secimi == "SVM":
-        model = SVC(kernel='rbf', probability=True)
-    else:
+    model = siniflandirma_modeli_olustur(model_secimi)
+    if model is None:
         return None
 
     model.fit(X_train, y_train)
@@ -305,6 +331,29 @@ def yon_tahmini_modeli(ind_df, model_secimi="Random Forest"):
     son_tahmin = model.predict(son_x)[0]
     yon = 'YUKARI ↑' if son_tahmin == 1 else 'AŞAĞI ↓'
     return {'dogruluk': round(acc, 1), 'son_tahmin': yon, 'test_boyutu': len(test)}
+
+def ml_paket_olustur(ind_df, son_kapanis, model_regresyon, model_siniflandirma, ufuk_gun):
+    """1 gün / 1 hafta panelinde gösterilecek paketi gerçek ML çıktısından üretir.
+    Yeterli veri yoksa (yeni halka arz vb.) eski kural tabanlı yönteme güvenli şekilde düşer."""
+    ml_sonuc = ml_tahmin_araligi(ind_df, model_secimi=model_regresyon, ufuk_gun=ufuk_gun)
+    yon_bilgi = yon_tahmini_modeli(ind_df, model_secimi=model_siniflandirma, ufuk_gun=ufuk_gun)
+
+    if ml_sonuc is None or yon_bilgi is None:
+        yedek = fiyat_aralik_tahmini(ind_df, son_kapanis, ufuk_gun)
+        yedek['kaynak'] = 'Kural Tabanlı (yetersiz veri)'
+        yedek['dogruluk'] = None
+        return yedek
+
+    yon_metin = 'YÜKSELİŞ' if 'YUKARI' in yon_bilgi['son_tahmin'] else 'DÜŞÜŞ'
+    return {
+        'yon': yon_metin,
+        'tahmini_kapanis': ml_sonuc['tahmini_fiyat'],
+        'yuksek': ml_sonuc['ust_fiyat'],
+        'dusuk': ml_sonuc['alt_fiyat'],
+        'guven_skoru': yon_bilgi['dogruluk'],
+        'dogruluk': yon_bilgi['dogruluk'],
+        'kaynak': model_regresyon
+    }
 
 def max_drawdown(seri):
     tepe = seri.expanding(min_periods=1).max()
@@ -538,12 +587,19 @@ if st.session_state.secili_sembol:
                         st.error("Yeterli indikatör verisi hesaplanamadı (en az 50 gün gerekli).")
                     else:
                         son_kapanis = ind_df['Close'].iloc[-1]
-                        tahmin_gun = fiyat_aralik_tahmini(ind_df, son_kapanis, 1)
-                        tahmin_hafta = fiyat_aralik_tahmini(ind_df, son_kapanis, 5)
+                        reg_secim = st.session_state.reg_model_select
+                        sinif_secim = st.session_state.sinif_model_select
+
+                        # 1 gün ve 1 hafta artık AYRI hedeflerle eğitilmiş gerçek modellerden geliyor,
+                        # bu yüzden model değiştirince veya ufuk değiştirince sonuç da değişecek.
+                        tahmin_gun = ml_paket_olustur(ind_df, son_kapanis, reg_secim, sinif_secim, ufuk_gun=1)
+                        tahmin_hafta = ml_paket_olustur(ind_df, son_kapanis, reg_secim, sinif_secim, ufuk_gun=5)
+
                         olasilik = hedef_olasilik(veri, son_kapanis)
-                        ml_sonuc = ml_tahmin_araligi(ind_df, model_secimi=st.session_state.reg_model_select)
+                        # tab2'deki 5 günlük ileri analiz panelleri, hafta tahminiyle aynı modeli tekrar kullanır
+                        ml_sonuc = ml_tahmin_araligi(ind_df, model_secimi=reg_secim, ufuk_gun=5)
                         kesişim = kesişim_dedektoru(ind_df)
-                        yon_tahmin = yon_tahmini_modeli(ind_df, model_secimi=st.session_state.sinif_model_select)
+                        yon_tahmin = yon_tahmini_modeli(ind_df, model_secimi=sinif_secim, ufuk_gun=5)
                         teknik_puan = teknik_puanlama(ind_df)
                         guclu_destek, guclu_direnc = destek_direnc_bul(veri.tail(90))
 
