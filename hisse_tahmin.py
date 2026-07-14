@@ -308,7 +308,7 @@ if st.session_state.secili_sembol:
                     ml_sonuc = ml_tahmin_araligi(ind_df)
 
                     # Sekmeler
-                    tab1, tab2, tab3 = st.tabs(["📋 Tahmin Sonuçları", "📈 İleri Analiz", "📊 İndikatörler"])
+                   tab1, tab2, tab3, tab4 = st.tabs(["📋 Tahmin Sonuçları", "📈 İleri Analiz", "📊 İndikatörler", "📉 Strateji Simülasyonu"])
 
                     with tab1:
                         col1, col2, col3 = st.columns(3)
@@ -385,6 +385,57 @@ if st.session_state.secili_sembol:
                         fig3.add_trace(go.Scatter(x=ind_df.index, y=ind_df['Bollinger_Alt'], line=dict(dash='dash'), name='Alt'))
                         fig3.update_layout(height=400)
                         st.plotly_chart(fig3, use_container_width=True)
+
+                    with tab4:
+                        st.subheader("📉 MACD + RSI Al/Sat Simülasyonu (Geçmiş Veri)")
+                        if st.button("🔄 Simülasyonu Çalıştır", key="sim_run"):
+                            try:
+                                # Simülasyon için veriyi tekrar çek (tarih aralığını genişlet)
+                                baslangic_sim = tahmin_tarihi - timedelta(days=3*365)  # 3 yıllık veri
+                                veri_sim = yf.download(secili, start=baslangic_sim, end=tahmin_tarihi, progress=False)
+                                if veri_sim.empty:
+                                    st.error("Simülasyon için yeterli veri yok.")
+                                else:
+                                    ind_sim = tum_indikatorleri_hesapla(veri_sim).dropna()
+                                    islemler, metrikler = strateji_simulasyonu(ind_sim)
+                
+                                    if metrikler:
+                                        st.success("Simülasyon tamamlandı!")
+                                        col1, col2, col3, col4 = st.columns(4)
+                                        with col1:
+                                            st.metric("Toplam Getiri", f"%{metrikler['Toplam Getiri (%)']}")
+                                        with col2:
+                                            st.metric("İşlem Sayısı", metrikler['İşlem Sayısı'])
+                                        with col3:
+                                            st.metric("Kazanma Oranı", f"%{metrikler['Kazanma Oranı (%)']}")
+                                        with col4:
+                                            st.metric("Maks. Drawdown", f"%{metrikler['Maksimum Drawdown (%)']}")
+                    
+                                        # Grafik: Fiyat + al/sat noktaları
+                                        fig_sim = go.Figure()
+                                        fig_sim.add_trace(go.Scatter(x=ind_sim.index, y=ind_sim['Close'], name='Kapanış'))
+                                        al_noktalari = [i for i in islemler if i['Tip'] == 'AL']
+                                        sat_noktalari = [i for i in islemler if i['Tip'] == 'SAT']
+                                        fig_sim.add_trace(go.Scatter(x=[i['Tarih'] for i in al_noktalari],
+                                                                     y=[i['Fiyat'] for i in al_noktalari],
+                                                                     mode='markers', marker=dict(color='green', size=10, symbol='triangle-up'),
+                                                                     name='AL'))
+                                        fig_sim.add_trace(go.Scatter(x=[i['Tarih'] for i in sat_noktalari],
+                                                                     y=[i['Fiyat'] for i in sat_noktalari],
+                                                                     mode='markers', marker=dict(color='red', size=10, symbol='triangle-down'),
+                                                                     name='SAT'))
+                                        fig_sim.update_layout(height=500)
+                                        st.plotly_chart(fig_sim, use_container_width=True)
+                                        
+                                        # İşlem tablosu
+                                        if islemler:
+                                            st.subheader("İşlem Geçmişi")
+                                            islem_df = pd.DataFrame(islemler)
+                                            st.dataframe(islem_df, use_container_width=True)
+                                    else:
+                                        st.warning("Bu tarih aralığında yeterli al/sat sinyali oluşmadı.")
+                            except Exception as e:
+                                st.error(f"Simülasyon hatası: {e}")
 
         except Exception as e:
             st.error(f"Hata oluştu: {e}")
