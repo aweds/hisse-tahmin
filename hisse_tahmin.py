@@ -93,7 +93,7 @@ if "secili_sembol" not in st.session_state:
 
 st.set_page_config(page_title="Hisse Fiyat Tahmini Pro", layout="wide")
 st.title("📈 Hisse Senedi Fiyat Tahmin Uygulaması (Pro)")
-st.markdown("8 indikatör + ML güven aralığı + olasılık analizi ile **1 gün / 1 hafta** tahmini.")
+st.markdown("8 indikatör + ML güven aralığı + olasılık analizi + Al/Sat simülasyonu")
 
 # ---------------------------
 # 8 İNDİKATÖR HESAPLAMA
@@ -168,7 +168,7 @@ def tum_indikatorleri_hesapla(df):
     return indikatorler
 
 # ---------------------------
-# TAHMİN FONKSİYONLARI (8 indikatörle)
+# TAHMİN FONKSİYONLARI
 # ---------------------------
 def fiyat_aralik_tahmini(ind_df, son_kapanis, gun_sayisi=1):
     son = ind_df.iloc[-1]
@@ -179,7 +179,7 @@ def fiyat_aralik_tahmini(ind_df, son_kapanis, gun_sayisi=1):
     if 50 < son['RSI'] < 70: trend_puani += 1
     if son['OBV'] > ind_df['OBV'].rolling(5).mean().iloc[-1]: trend_puani += 1
     if son['Stokastik_K'] > son['Stokastik_D']: trend_puani += 1
-    if son['ADX'] > 25: trend_puani += 1  # Trend güçlüyse ek puan
+    if son['ADX'] > 25: trend_puani += 1
 
     if trend_puani >= 4:
         yon = 1
@@ -254,6 +254,50 @@ def ml_tahmin_araligi(ind_df):
         'tahmini_fiyat': round(son_fiyat * (1 + tahmin/100), 2)
     }
 
+def max_drawdown(seri):
+    tepe = seri.expanding(min_periods=1).max()
+    drawdown = (seri - tepe) / tepe * 100
+    return drawdown.min()
+
+def al_sat_sinyalleri_uret(ind_df):
+    df = ind_df.copy()
+    df['MACD_kesisme'] = (df['MACD'] > df['MACD_Sinyal']) & (df['MACD'].shift(1) <= df['MACD_Sinyal'].shift(1))
+    df['MACD_asagi_kesisme'] = (df['MACD'] < df['MACD_Sinyal']) & (df['MACD'].shift(1) >= df['MACD_Sinyal'].shift(1))
+    al_sinyali = df['MACD_kesisme'] & (df['RSI'] < 70)
+    sat_sinyali = df['MACD_asagi_kesisme'] | (df['RSI'] >= 70)
+    df['Sinyal'] = 0
+    df.loc[al_sinyali, 'Sinyal'] = 1
+    df.loc[sat_sinyali, 'Sinyal'] = -1
+    return df
+
+def strateji_simulasyonu(df):
+    sinyal_df = al_sat_sinyalleri_uret(df)
+    pozisyon = 0
+    alis_fiyat = 0
+    islemler = []
+    for i in range(len(sinyal_df)):
+        if sinyal_df['Sinyal'].iloc[i] == 1 and pozisyon == 0:
+            pozisyon = 1
+            alis_fiyat = sinyal_df['Close'].iloc[i]
+            islemler.append({'Tarih': sinyal_df.index[i], 'Tip': 'AL', 'Fiyat': alis_fiyat})
+        elif sinyal_df['Sinyal'].iloc[i] == -1 and pozisyon == 1:
+            pozisyon = 0
+            satis_fiyat = sinyal_df['Close'].iloc[i]
+            islemler.append({'Tarih': sinyal_df.index[i], 'Tip': 'SAT', 'Fiyat': satis_fiyat})
+            getiri = (satis_fiyat - alis_fiyat) / alis_fiyat * 100
+            islemler[-1]['Getiri (%)'] = round(getiri, 2)
+    if len(islemler) < 2:
+        return None, None
+    kazananlar = [i for i in islemler if i.get('Getiri (%)', 0) > 0]
+    toplam_getiri = sum(i.get('Getiri (%)', 0) for i in islemler)
+    kazanc_orani = len(kazananlar) / (len(islemler) // 2) * 100 if len(islemler) // 2 > 0 else 0
+    return islemler, {
+        'Toplam Getiri (%)': round(toplam_getiri, 2),
+        'İşlem Sayısı': len(islemler) // 2,
+        'Kazanma Oranı (%)': round(kazanc_orani, 1),
+        'Maksimum Drawdown (%)': round(max_drawdown(sinyal_df['Close']), 2)
+    }
+
 # ---------------------------
 # ARAYÜZ: Hisse Seçimi
 # ---------------------------
@@ -307,8 +351,12 @@ if st.session_state.secili_sembol:
                     olasilik = hedef_olasilik(veri, son_kapanis)
                     ml_sonuc = ml_tahmin_araligi(ind_df)
 
-                    # Sekmeler
-                   tab1, tab2, tab3, tab4 = st.tabs(["📋 Tahmin Sonuçları", "📈 İleri Analiz", "📊 İndikatörler", "📉 Strateji Simülasyonu"])
+                    tab1, tab2, tab3, tab4 = st.tabs([
+                        "📋 Tahmin Sonuçları",
+                        "📈 İleri Analiz",
+                        "📊 İndikatörler",
+                        "📉 Strateji Simülasyonu"
+                    ])
 
                     with tab1:
                         col1, col2, col3 = st.columns(3)
@@ -324,7 +372,6 @@ if st.session_state.secili_sembol:
                             st.markdown(f"**Yön:** {tahmin_hafta['yon']} (Güven: %{tahmin_hafta['guven_skoru']:.0f})")
                             st.metric("Aralık", f"{tahmin_hafta['dusuk']} - {tahmin_hafta['yuksek']}")
 
-                        # Haftalık bant grafiği
                         st.subheader("📅 Haftalık Bant Geçmişi ve Tahmin")
                         df_haftalik = veri['Close'].resample('W').ohlc().dropna().tail(10)
                         fig = go.Figure()
@@ -350,7 +397,6 @@ if st.session_state.secili_sembol:
                         else:
                             st.warning("ML analizi için yeterli veri yok (en az 100 gün).")
 
-                        # Hacim profili grafiği
                         st.subheader("📊 Basit Hacim Profili (Son 90 Gün)")
                         son_veri = veri.tail(90)
                         fiyat_aralik = np.linspace(son_veri['Low'].min(), son_veri['High'].max(), 15)
@@ -390,15 +436,13 @@ if st.session_state.secili_sembol:
                         st.subheader("📉 MACD + RSI Al/Sat Simülasyonu (Geçmiş Veri)")
                         if st.button("🔄 Simülasyonu Çalıştır", key="sim_run"):
                             try:
-                                # Simülasyon için veriyi tekrar çek (tarih aralığını genişlet)
-                                baslangic_sim = tahmin_tarihi - timedelta(days=3*365)  # 3 yıllık veri
+                                baslangic_sim = tahmin_tarihi - timedelta(days=3*365)
                                 veri_sim = yf.download(secili, start=baslangic_sim, end=tahmin_tarihi, progress=False)
                                 if veri_sim.empty:
                                     st.error("Simülasyon için yeterli veri yok.")
                                 else:
                                     ind_sim = tum_indikatorleri_hesapla(veri_sim).dropna()
                                     islemler, metrikler = strateji_simulasyonu(ind_sim)
-                
                                     if metrikler:
                                         st.success("Simülasyon tamamlandı!")
                                         col1, col2, col3, col4 = st.columns(4)
@@ -410,24 +454,22 @@ if st.session_state.secili_sembol:
                                             st.metric("Kazanma Oranı", f"%{metrikler['Kazanma Oranı (%)']}")
                                         with col4:
                                             st.metric("Maks. Drawdown", f"%{metrikler['Maksimum Drawdown (%)']}")
-                    
-                                        # Grafik: Fiyat + al/sat noktaları
                                         fig_sim = go.Figure()
                                         fig_sim.add_trace(go.Scatter(x=ind_sim.index, y=ind_sim['Close'], name='Kapanış'))
                                         al_noktalari = [i for i in islemler if i['Tip'] == 'AL']
                                         sat_noktalari = [i for i in islemler if i['Tip'] == 'SAT']
-                                        fig_sim.add_trace(go.Scatter(x=[i['Tarih'] for i in al_noktalari],
-                                                                     y=[i['Fiyat'] for i in al_noktalari],
-                                                                     mode='markers', marker=dict(color='green', size=10, symbol='triangle-up'),
-                                                                     name='AL'))
-                                        fig_sim.add_trace(go.Scatter(x=[i['Tarih'] for i in sat_noktalari],
-                                                                     y=[i['Fiyat'] for i in sat_noktalari],
-                                                                     mode='markers', marker=dict(color='red', size=10, symbol='triangle-down'),
-                                                                     name='SAT'))
+                                        fig_sim.add_trace(go.Scatter(
+                                            x=[i['Tarih'] for i in al_noktalari],
+                                            y=[i['Fiyat'] for i in al_noktalari],
+                                            mode='markers', marker=dict(color='green', size=10, symbol='triangle-up'),
+                                            name='AL'))
+                                        fig_sim.add_trace(go.Scatter(
+                                            x=[i['Tarih'] for i in sat_noktalari],
+                                            y=[i['Fiyat'] for i in sat_noktalari],
+                                            mode='markers', marker=dict(color='red', size=10, symbol='triangle-down'),
+                                            name='SAT'))
                                         fig_sim.update_layout(height=500)
                                         st.plotly_chart(fig_sim, use_container_width=True)
-                                        
-                                        # İşlem tablosu
                                         if islemler:
                                             st.subheader("İşlem Geçmişi")
                                             islem_df = pd.DataFrame(islemler)
@@ -436,6 +478,5 @@ if st.session_state.secili_sembol:
                                         st.warning("Bu tarih aralığında yeterli al/sat sinyali oluşmadı.")
                             except Exception as e:
                                 st.error(f"Simülasyon hatası: {e}")
-
         except Exception as e:
             st.error(f"Hata oluştu: {e}")
