@@ -90,7 +90,6 @@ SEMBOL_ISIM = {h["sembol"]: h["isim"] for h in HISSE_LISTESI}
 if "secili_sembol" not in st.session_state:
     st.session_state.secili_sembol = None
 
-# Sayfa ayarları
 st.set_page_config(page_title="Hisse Fiyat Aralığı Tahmini", layout="wide")
 st.title("📈 Hisse Senedi Fiyat Aralık Tahmin Uygulaması (BIST 100)")
 st.markdown("6 indikatör ile **1 gün sonrası** ve **1 hafta sonrası** için fiyat aralığı tahmini.")
@@ -208,18 +207,10 @@ def fiyat_aralik_tahmini(ind_df, son_kapanis, gun_sayisi=1):
     }
 
 # ---------------------------
-# Hisse arama ve seçim bölümü
+# Hisse arama ve butonla seçim
 # ---------------------------
 st.subheader("🔍 Hisse Seçimi (BIST 100)")
 arama_metni = st.text_input("Hisse adı veya kodu yazın:", placeholder="Örn: THYAO veya Türk Hava")
-
-def secim_yap():
-    st.session_state.secili_sembol = st.session_state.radio_hisse["sembol"]
-    # Seçimden sonra sayfayı yenile ki alt kısım görünsün
-    try:
-        st.rerun()
-    except AttributeError:
-        st.experimental_rerun()
 
 if arama_metni:
     arama_lower = arama_metni.lower()
@@ -227,24 +218,30 @@ if arama_metni:
     for h in HISSE_LISTESI:
         if arama_lower in h["sembol"].lower() or arama_lower in h["isim"].lower():
             oneriler.append(h)
-    manuel = {"sembol": arama_metni.strip().upper(), "isim": "Manuel giriş"}
-    oneriler.insert(0, manuel)
+    # Manuel giriş seçeneğini ekle
+    manuel_sembol = arama_metni.strip().upper()
+    oneriler.insert(0, {"sembol": manuel_sembol, "isim": "Manuel giriş"})
     
-    if oneriler:
-        st.radio(
-            "Öneriler:",
-            options=oneriler,
-            format_func=lambda x: f"{x['sembol']} - {x['isim']}",
-            key="radio_hisse",
-            on_change=secim_yap,
-        )
-    else:
-        st.info("Eşleşen hisse bulunamadı. Lütfen farklı bir arama yapın.")
+    st.write("**Bulunan hisseler (seçmek için butona basın):**")
+    # Her satırda 2 buton
+    for i in range(0, len(oneriler), 2):
+        cols = st.columns(2)
+        for j in range(2):
+            idx = i + j
+            if idx < len(oneriler):
+                h = oneriler[idx]
+                with cols[j]:
+                    st.button(
+                        f"{h['sembol']} - {h['isim']}",
+                        key=f"sec_{h['sembol']}",
+                        on_click=lambda sembol=h['sembol']: st.session_state.update({"secili_sembol": sembol}),
+                        use_container_width=True
+                    )
 else:
-    st.write("Hisse aramaya başlayın...")
+    st.info("Hisse aramaya başlayın...")
 
 # ---------------------------
-# Seçili hisse ile tahmin bölümü
+# Seçili hisse varsa tahmin bölümü
 # ---------------------------
 if st.session_state.secili_sembol:
     secili = st.session_state.secili_sembol
@@ -255,10 +252,6 @@ if st.session_state.secili_sembol:
     with col1:
         if st.button("🔄 Farklı hisse seç"):
             st.session_state.secili_sembol = None
-            try:
-                st.rerun()
-            except AttributeError:
-                st.experimental_rerun()
     with col2:
         tahmin_tarihi = st.date_input(
             "Tahmin hangi tarih itibarıyla yapılsın? (dünün verisiyle)",
