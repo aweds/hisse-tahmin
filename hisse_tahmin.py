@@ -4,6 +4,8 @@ import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
 import plotly.graph_objects as go
+from sklearn.ensemble import RandomForestRegressor, RandomForestClassifier
+from sklearn.metrics import accuracy_score
 
 # ---------------------------
 # GÜNCEL BIST 100 HİSSE LİSTESİ
@@ -91,7 +93,7 @@ if "secili_sembol" not in st.session_state:
 
 st.set_page_config(page_title="Hisse Fiyat Tahmini Pro", layout="wide")
 st.title("📈 Hisse Senedi Fiyat Tahmin Uygulaması (Pro)")
-st.markdown("8 indikatör + ML + olasılık + Al/Sat simülasyonu + Kesişim dedektörü")
+st.markdown("8 indikatör + ML güven aralığı + olasılık + Al/Sat simülasyonu + Kesişim dedektörü + Yön tahmini")
 
 # ---------------------------
 # 8 İNDİKATÖR HESAPLAMA
@@ -134,13 +136,11 @@ def tum_indikatorleri_hesapla(df):
     yon = np.sign(kapanis.diff()).fillna(0)
     obv = (yon * hacim).cumsum()
 
-    # Stokastik %K, %D (14,3)
     dusuk_14 = dusuk.rolling(14).min()
     yuksek_14 = yuksek.rolling(14).max()
     stok_k = (kapanis - dusuk_14) / (yuksek_14 - dusuk_14) * 100
     stok_d = stok_k.rolling(3).mean()
 
-    # ADX (14)
     artis = yuksek.diff()
     dusus = -dusuk.diff()
     pdm = pd.Series(np.where((artis > dusus) & (artis > 0), artis, 0), index=kapanis.index)
@@ -180,7 +180,6 @@ def fiyat_aralik_tahmini(ind_df, son_kapanis, gun_sayisi=1):
     if son['ADX'] > 25: trend_puani += 1
 
     yon = 1 if trend_puani >= 4 else (-1 if trend_puani <= 2 else 0)
-
     gunluk_getiri = ind_df['Close'].pct_change().dropna()
     son_20_gun = gunluk_getiri.tail(20)
     ortalama_getiri = son_20_gun.mean()
@@ -225,7 +224,6 @@ def hedef_olasilik(df, son_kapanis, gun=50, hedef_yuzde=5):
     return olasilik
 
 def ml_tahmin_araligi(ind_df):
-    from sklearn.ensemble import RandomForestRegressor
     ozellikler = ['SMA_50', 'SMA_200', 'MACD', 'RSI', 'ATR', 'Stokastik_K', 'ADX']
     X = ind_df[ozellikler].dropna()
     y = ind_df['Close'].pct_change(5).shift(-5) * 100
@@ -246,6 +244,32 @@ def ml_tahmin_araligi(ind_df):
         'ust_fiyat': round(son_fiyat * (1 + (tahmin + 1.96*std_hata)/100), 2),
         'tahmini_fiyat': round(son_fiyat * (1 + tahmin/100), 2)
     }
+
+def yon_tahmini_modeli(ind_df):
+    """5 gün sonraki yönü sınıflandırır ve doğruluk oranını döndürür."""
+    ozellikler = ['SMA_50', 'SMA_200', 'MACD', 'RSI', 'ATR', 'Stokastik_K', 'ADX']
+    df = ind_df.dropna(subset=ozellikler).copy()
+    df['Hedef'] = (df['Close'].shift(-5) > df['Close']).astype(int)  # 1: yukarı, 0: aşağı
+    df = df.dropna(subset=['Hedef'])
+    if len(df) < 200:
+        return None
+    # Zamansal bölme: son %20 test, ilk %80 eğitim
+    split_idx = int(len(df) * 0.8)
+    train = df.iloc[:split_idx]
+    test = df.iloc[split_idx:]
+    X_train = train[ozellikler]
+    y_train = train['Hedef']
+    X_test = test[ozellikler]
+    y_test = test['Hedef']
+    model = RandomForestClassifier(n_estimators=100, random_state=42)
+    model.fit(X_train, y_train)
+    y_pred = model.predict(X_test)
+    acc = accuracy_score(y_test, y_pred) * 100
+    # En son veri noktası için tahmin
+    son_x = df[ozellikler].iloc[-1:].values
+    son_tahmin = model.predict(son_x)[0]
+    yon = 'YUKARI ↑' if son_tahmin == 1 else 'AŞAĞI ↓'
+    return {'dogruluk': round(acc, 1), 'son_tahmin': yon, 'test_boyutu': len(test)}
 
 def max_drawdown(seri):
     tepe = seri.expanding(min_periods=1).max()
@@ -292,7 +316,6 @@ def strateji_simulasyonu(df):
     }
 
 def kesişim_dedektoru(ind_df):
-    """Yaklaşan Golden/Death Cross tahmini yapar."""
     df = ind_df.dropna(subset=['SMA_50', 'SMA_200']).copy()
     if len(df) < 20:
         return None
@@ -351,7 +374,7 @@ if st.session_state.secili_sembol:
         if st.button("🔄 Farklı hisse seç"):
             for key in ["tahmin_gun", "tahmin_hafta", "olasilik", "ml_sonuc", "ind_df",
                         "son_kapanis", "veri", "sim_islemler", "sim_metrikler", "sim_ind_sim",
-                        "kesişim_sonuc"]:
+                        "kesişim_sonuc", "yon_tahmin"]:
                 st.session_state.pop(key, None)
             st.session_state.secili_sembol = None
     with col2:
@@ -376,6 +399,7 @@ if st.session_state.secili_sembol:
                         olasilik = hedef_olasilik(veri, son_kapanis)
                         ml_sonuc = ml_tahmin_araligi(ind_df)
                         kesişim = kesişim_dedektoru(ind_df)
+                        yon_tahmin = yon_tahmini_modeli(ind_df)
 
                         st.session_state["tahmin_gun"] = tahmin_gun
                         st.session_state["tahmin_hafta"] = tahmin_hafta
@@ -385,6 +409,7 @@ if st.session_state.secili_sembol:
                         st.session_state["son_kapanis"] = son_kapanis
                         st.session_state["veri"] = veri
                         st.session_state["kesişim_sonuc"] = kesişim
+                        st.session_state["yon_tahmin"] = yon_tahmin
                         st.rerun()
             except Exception as e:
                 st.error(f"Hata oluştu: {e}")
@@ -398,6 +423,7 @@ if st.session_state.secili_sembol:
         son_kapanis = st.session_state["son_kapanis"]
         veri = st.session_state["veri"]
         kesişim = st.session_state.get("kesişim_sonuc", None)
+        yon_tahmin = st.session_state.get("yon_tahmin", None)
 
         tab1, tab2, tab3, tab4 = st.tabs([
             "📋 Tahmin Sonuçları",
@@ -438,14 +464,27 @@ if st.session_state.secili_sembol:
             st.subheader("🎯 Koşullu Olasılık Analizi")
             st.metric(f"50 Günlük Ort. Üstünde İken 5 Gün Sonra %5 Yükseliş Olasılığı",
                       f"%{olasilik:.1f}")
+
             if ml_sonuc:
                 st.subheader("🤖 ML 5 Günlük Güven Aralığı (Random Forest %95)")
                 st.metric("Tahmini Fiyat", f"{ml_sonuc['tahmini_fiyat']} TL")
                 st.write(f"**Alt sınır:** {ml_sonuc['alt_fiyat']} TL / **Üst sınır:** {ml_sonuc['ust_fiyat']} TL")
             else:
-                st.warning("ML analizi için yeterli veri yok (en az 100 gün).")
+                st.warning("ML güven aralığı için yeterli veri yok.")
 
-            # ---- YENİ: Hareketli Ortalama Kesişim Dedektörü ----
+            # ---- Yeni: Yön Tahmini Modeli ----
+            st.subheader("🧠 Yön Tahmini Modeli (Sınıflandırma)")
+            if yon_tahmin is None:
+                st.warning("Yön tahmini için yeterli veri yok (en az 200 gün).")
+            else:
+                col_yt1, col_yt2 = st.columns(2)
+                with col_yt1:
+                    st.metric("Test Doğruluğu", f"%{yon_tahmin['dogruluk']}")
+                    st.caption(f"Test verisi: son {yon_tahmin['test_boyutu']} işlem günü")
+                with col_yt2:
+                    st.metric("5 Günlük Yön Tahmini", yon_tahmin['son_tahmin'])
+
+            # ---- Kesişim Dedektörü ----
             st.subheader("⚡ Hareketli Ortalama Kesişim Dedektörü")
             if kesişim is None:
                 st.warning("Kesişim analizi için yeterli veri yok.")
@@ -455,9 +494,9 @@ if st.session_state.secili_sembol:
                 st.info("Kesişim yönü belirsiz, ancak ortalamalar birbirine yaklaşıyor olabilir.")
             else:
                 if kesişim['tip'] == 'Golden Cross':
-                    st.success(f"🔔 **{kesişim['tip']}** yaklaşıyor! Tahmini {kesişim['gun']} işlem günü içinde gerçekleşebilir.")
+                    st.success(f"🔔 **{kesişim['tip']}** yaklaşıyor! Tahmini {kesişim['gun']} işlem günü içinde.")
                 elif kesişim['tip'] == 'Death Cross':
-                    st.error(f"⚠️ **{kesişim['tip']}** yaklaşıyor! Tahmini {kesişim['gun']} işlem günü içinde gerçekleşebilir.")
+                    st.error(f"⚠️ **{kesişim['tip']}** yaklaşıyor! Tahmini {kesişim['gun']} işlem günü içinde.")
                 st.caption(f"Son fark (SMA50 - SMA200): {kesişim['son_fark']:.4f}")
 
             st.subheader("📊 Basit Hacim Profili (Son 90 Gün)")
