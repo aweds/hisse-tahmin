@@ -85,15 +85,13 @@ HISSE_LISTESI = [
 ]
 SEMBOL_ISIM = {h["sembol"]: h["isim"] for h in HISSE_LISTESI}
 
-# ---------------------------
 # Session state
-# ---------------------------
 if "secili_sembol" not in st.session_state:
     st.session_state.secili_sembol = None
 
 st.set_page_config(page_title="Hisse Fiyat Tahmini Pro", layout="wide")
 st.title("📈 Hisse Senedi Fiyat Tahmin Uygulaması (Pro)")
-st.markdown("8 indikatör + ML güven aralığı + olasılık analizi + Al/Sat simülasyonu")
+st.markdown("8 indikatör + ML + olasılık + Al/Sat simülasyonu + Kesişim dedektörü")
 
 # ---------------------------
 # 8 İNDİKATÖR HESAPLAMA
@@ -181,12 +179,7 @@ def fiyat_aralik_tahmini(ind_df, son_kapanis, gun_sayisi=1):
     if son['Stokastik_K'] > son['Stokastik_D']: trend_puani += 1
     if son['ADX'] > 25: trend_puani += 1
 
-    if trend_puani >= 4:
-        yon = 1
-    elif trend_puani <= 2:
-        yon = -1
-    else:
-        yon = 0
+    yon = 1 if trend_puani >= 4 else (-1 if trend_puani <= 2 else 0)
 
     gunluk_getiri = ind_df['Close'].pct_change().dropna()
     son_20_gun = gunluk_getiri.tail(20)
@@ -298,8 +291,34 @@ def strateji_simulasyonu(df):
         'Maksimum Drawdown (%)': round(max_drawdown(sinyal_df['Close']), 2)
     }
 
+def kesişim_dedektoru(ind_df):
+    """Yaklaşan Golden/Death Cross tahmini yapar."""
+    df = ind_df.dropna(subset=['SMA_50', 'SMA_200']).copy()
+    if len(df) < 20:
+        return None
+    son_fark = df['SMA_50'].iloc[-1] - df['SMA_200'].iloc[-1]
+    fark_serisi = df['SMA_50'] - df['SMA_200']
+    y = fark_serisi.iloc[-20:].values
+    x = np.arange(len(y))
+    if np.std(y) < 1e-9:
+        return None
+    egim, intercept = np.polyfit(x, y, 1)
+    if abs(egim) < 1e-9:
+        return None
+    x_kesişim = -intercept / egim
+    kalan_gun = x_kesişim - (len(y) - 1)
+    if kalan_gun < 0:
+        return {'tip': 'none', 'gun': 0, 'son_fark': son_fark}
+    if son_fark < 0 and egim > 0:
+        tip = 'Golden Cross'
+    elif son_fark > 0 and egim < 0:
+        tip = 'Death Cross'
+    else:
+        tip = 'Belirsiz'
+    return {'tip': tip, 'gun': round(kalan_gun), 'son_fark': son_fark}
+
 # ---------------------------
-# ARAYÜZ: Hisse Seçimi
+# ARAYÜZ
 # ---------------------------
 st.subheader("🔍 Hisse Seçimi")
 arama_metni = st.text_input("Hisse adı veya kodu yazın:", placeholder="Örn: THYAO veya Türk Hava")
@@ -330,9 +349,9 @@ if st.session_state.secili_sembol:
     col1, col2 = st.columns([1, 1])
     with col1:
         if st.button("🔄 Farklı hisse seç"):
-            # tüm analiz ve simülasyon state'lerini temizle
             for key in ["tahmin_gun", "tahmin_hafta", "olasilik", "ml_sonuc", "ind_df",
-                        "son_kapanis", "veri", "sim_islemler", "sim_metrikler", "sim_ind_sim"]:
+                        "son_kapanis", "veri", "sim_islemler", "sim_metrikler", "sim_ind_sim",
+                        "kesişim_sonuc"]:
                 st.session_state.pop(key, None)
             st.session_state.secili_sembol = None
     with col2:
@@ -356,8 +375,8 @@ if st.session_state.secili_sembol:
                         tahmin_hafta = fiyat_aralik_tahmini(ind_df, son_kapanis, 5)
                         olasilik = hedef_olasilik(veri, son_kapanis)
                         ml_sonuc = ml_tahmin_araligi(ind_df)
+                        kesişim = kesişim_dedektoru(ind_df)
 
-                        # Session state'e kaydet
                         st.session_state["tahmin_gun"] = tahmin_gun
                         st.session_state["tahmin_hafta"] = tahmin_hafta
                         st.session_state["olasilik"] = olasilik
@@ -365,11 +384,11 @@ if st.session_state.secili_sembol:
                         st.session_state["ind_df"] = ind_df
                         st.session_state["son_kapanis"] = son_kapanis
                         st.session_state["veri"] = veri
+                        st.session_state["kesişim_sonuc"] = kesişim
                         st.rerun()
             except Exception as e:
                 st.error(f"Hata oluştu: {e}")
 
-    # Session state'te analiz sonuçları varsa sekmeleri göster
     if "tahmin_gun" in st.session_state:
         tahmin_gun = st.session_state["tahmin_gun"]
         tahmin_hafta = st.session_state["tahmin_hafta"]
@@ -378,6 +397,7 @@ if st.session_state.secili_sembol:
         ind_df = st.session_state["ind_df"]
         son_kapanis = st.session_state["son_kapanis"]
         veri = st.session_state["veri"]
+        kesişim = st.session_state.get("kesişim_sonuc", None)
 
         tab1, tab2, tab3, tab4 = st.tabs([
             "📋 Tahmin Sonuçları",
@@ -424,6 +444,21 @@ if st.session_state.secili_sembol:
                 st.write(f"**Alt sınır:** {ml_sonuc['alt_fiyat']} TL / **Üst sınır:** {ml_sonuc['ust_fiyat']} TL")
             else:
                 st.warning("ML analizi için yeterli veri yok (en az 100 gün).")
+
+            # ---- YENİ: Hareketli Ortalama Kesişim Dedektörü ----
+            st.subheader("⚡ Hareketli Ortalama Kesişim Dedektörü")
+            if kesişim is None:
+                st.warning("Kesişim analizi için yeterli veri yok.")
+            elif kesişim['tip'] == 'none':
+                st.info("Yakın zamanda bir kesişim beklenmiyor.")
+            elif kesişim['tip'] == 'Belirsiz':
+                st.info("Kesişim yönü belirsiz, ancak ortalamalar birbirine yaklaşıyor olabilir.")
+            else:
+                if kesişim['tip'] == 'Golden Cross':
+                    st.success(f"🔔 **{kesişim['tip']}** yaklaşıyor! Tahmini {kesişim['gun']} işlem günü içinde gerçekleşebilir.")
+                elif kesişim['tip'] == 'Death Cross':
+                    st.error(f"⚠️ **{kesişim['tip']}** yaklaşıyor! Tahmini {kesişim['gun']} işlem günü içinde gerçekleşebilir.")
+                st.caption(f"Son fark (SMA50 - SMA200): {kesişim['son_fark']:.4f}")
 
             st.subheader("📊 Basit Hacim Profili (Son 90 Gün)")
             son_veri = veri.tail(90)
