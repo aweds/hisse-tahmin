@@ -93,7 +93,7 @@ if "secili_sembol" not in st.session_state:
 
 st.set_page_config(page_title="Hisse Fiyat Tahmini Pro", layout="wide")
 st.title("📈 Hisse Senedi Fiyat Tahmin Uygulaması (Pro)")
-st.markdown("8 indikatör + ML + olasılık + Al/Sat simülasyonu + Kesişim dedektörü + Yön tahmini + Sağlık Karnesi")
+st.markdown("8 indikatör + ML + olasılık + Al/Sat simülasyonu + Kesişim dedektörü + Yön tahmini + Sağlık Karnesi + Destek/Direnç")
 
 # ---------------------------
 # 8 İNDİKATÖR HESAPLAMA
@@ -340,49 +340,37 @@ def kesişim_dedektoru(ind_df):
         tip = 'Belirsiz'
     return {'tip': tip, 'gun': round(kalan_gun), 'son_fark': son_fark}
 
-# ---------------------------
-# YENİ: TEMATİK PUANLAMA (SAĞLIK KARNESİ)
-# ---------------------------
 def teknik_puanlama(ind_df):
-    """0-10 arası puanlar: trend, momentum, volatilite, hacim ve genel."""
     son = ind_df.iloc[-1]
-
-    # Trend puanı (0-10)
     trend = 0
     if son['SMA_50'] > son['SMA_200']: trend += 4
     if son['Close'] > son['SMA_50']: trend += 3
     if son['Close'] > son['SMA_200']: trend += 3
     trend = min(trend, 10)
 
-    # Momentum puanı (0-10)
     momentum = 0
     rsi = son['RSI']
     if rsi > 60: momentum += 4
     elif rsi > 50: momentum += 3
     elif rsi > 30: momentum += 1
-    else: momentum += 2  # aşırı satım, dönüş potansiyeli
+    else: momentum += 2
     if son['MACD'] > son['MACD_Sinyal']: momentum += 4
     if son['Stokastik_K'] > son['Stokastik_D']: momentum += 2
     momentum = min(momentum, 10)
 
-    # Volatilite / Destek-Direnç puanı (0-10)
-    volatilite = 5  # nötr başlangıç
+    volatilite = 5
     fiyat = son['Close']
     sma20 = (son['Bollinger_Ust'] + son['Bollinger_Alt']) / 2
     bant_genisligi = (son['Bollinger_Ust'] - son['Bollinger_Alt']) / sma20 * 100
-    # Fiyatın orta banda yakınlığı (+3 puan)
     fark_yuzde = abs(fiyat - sma20) / sma20 * 100
     if fark_yuzde < 1: volatilite += 3
     elif fark_yuzde < 2: volatilite += 1
-    # Bollinger genişliği dar ise sıkışma (breakout beklentisi) +2
     if bant_genisligi < 5: volatilite += 2
-    # ATR son 20 gün ortalamasına göre düşükse istikrar +2
     ortalama_atr = ind_df['ATR'].rolling(20).mean().iloc[-1]
     if son['ATR'] < ortalama_atr: volatilite += 2
     else: volatilite -= 1
     volatilite = max(0, min(volatilite, 10))
 
-    # Hacim puanı (0-10)
     hacim_p = 0
     obv_ortalama = ind_df['OBV'].rolling(5).mean().iloc[-1]
     if son['OBV'] > obv_ortalama: hacim_p += 5
@@ -398,6 +386,51 @@ def teknik_puanlama(ind_df):
         'hacim': hacim_p,
         'genel': genel
     }
+
+def destek_direnc_bul(df, pencere=5):
+    """Yerel pivot noktalarını tespit eder, seviyeleri döndürür."""
+    yuksek = df['High']
+    dusuk = df['Low']
+    kapanis = df['Close']
+    pivot_tepeler = []
+    pivot_dipler = []
+
+    for i in range(pencere, len(df)-pencere):
+        if yuksek.iloc[i] == yuksek.iloc[i-pencere:i+pencere+1].max():
+            pivot_tepeler.append({'tarih': yuksek.index[i], 'fiyat': yuksek.iloc[i]})
+        if dusuk.iloc[i] == dusuk.iloc[i-pencere:i+pencere+1].min():
+            pivot_dipler.append({'tarih': dusuk.index[i], 'fiyat': dusuk.iloc[i]})
+
+    # Seviyeleri grupla (birbirine yakın olanları birleştir)
+    tolerans = kapanis.iloc[-1] * 0.01  # %1 bant
+    destek_seviyeleri = []
+    for dip in pivot_dipler:
+        eklendi = False
+        for seviye in destek_seviyeleri:
+            if abs(dip['fiyat'] - seviye['fiyat']) < tolerans:
+                seviye['sayi'] += 1
+                seviye['tarihler'].append(dip['tarih'])
+                eklendi = True
+                break
+        if not eklendi:
+            destek_seviyeleri.append({'fiyat': dip['fiyat'], 'sayi': 1, 'tarihler': [dip['tarih']]})
+
+    direnc_seviyeleri = []
+    for tepe in pivot_tepeler:
+        eklendi = False
+        for seviye in direnc_seviyeleri:
+            if abs(tepe['fiyat'] - seviye['fiyat']) < tolerans:
+                seviye['sayi'] += 1
+                seviye['tarihler'].append(tepe['tarih'])
+                eklendi = True
+                break
+        if not eklendi:
+            direnc_seviyeleri.append({'fiyat': tepe['fiyat'], 'sayi': 1, 'tarihler': [tepe['tarih']]})
+
+    # Güçlü seviyeler (2 ve üzeri dokunuş) vurgulansın
+    guclu_destek = [s for s in destek_seviyeleri if s['sayi'] >= 2]
+    guclu_direnc = [s for s in direnc_seviyeleri if s['sayi'] >= 2]
+    return guclu_destek, guclu_direnc
 
 # ---------------------------
 # ARAYÜZ
@@ -433,7 +466,7 @@ if st.session_state.secili_sembol:
         if st.button("🔄 Farklı hisse seç"):
             for key in ["tahmin_gun", "tahmin_hafta", "olasilik", "ml_sonuc", "ind_df",
                         "son_kapanis", "veri", "sim_islemler", "sim_metrikler", "sim_ind_sim",
-                        "kesişim_sonuc", "yon_tahmin", "teknik_puan"]:
+                        "kesişim_sonuc", "yon_tahmin", "teknik_puan", "destek_direnc"]:
                 st.session_state.pop(key, None)
             st.session_state.secili_sembol = None
     with col2:
@@ -460,6 +493,8 @@ if st.session_state.secili_sembol:
                         kesişim = kesişim_dedektoru(ind_df)
                         yon_tahmin = yon_tahmini_modeli(ind_df)
                         teknik_puan = teknik_puanlama(ind_df)
+                        # Destek/direnç için son 90 günlük veri yeterli
+                        guclu_destek, guclu_direnc = destek_direnc_bul(veri.tail(90))
 
                         st.session_state["tahmin_gun"] = tahmin_gun
                         st.session_state["tahmin_hafta"] = tahmin_hafta
@@ -471,6 +506,7 @@ if st.session_state.secili_sembol:
                         st.session_state["kesişim_sonuc"] = kesişim
                         st.session_state["yon_tahmin"] = yon_tahmin
                         st.session_state["teknik_puan"] = teknik_puan
+                        st.session_state["destek_direnc"] = (guclu_destek, guclu_direnc)
                         st.rerun()
             except Exception as e:
                 st.error(f"Hata oluştu: {e}")
@@ -486,6 +522,7 @@ if st.session_state.secili_sembol:
         kesişim = st.session_state.get("kesişim_sonuc", None)
         yon_tahmin = st.session_state.get("yon_tahmin", None)
         teknik_puan = st.session_state.get("teknik_puan", None)
+        guclu_destek, guclu_direnc = st.session_state.get("destek_direnc", ([], []))
 
         tab1, tab2, tab3, tab4, tab5 = st.tabs([
             "📋 Tahmin Sonuçları",
@@ -573,6 +610,28 @@ if st.session_state.secili_sembol:
             fig2.update_layout(xaxis_title="Hacim", yaxis_title="Fiyat", height=400)
             st.plotly_chart(fig2, use_container_width=True)
 
+            # ---- YENİ: Otomatik Destek/Direnç Seviyeleri ----
+            st.subheader("🏗️ Otomatik Destek/Direnç Seviyeleri")
+            if not guclu_destek and not guclu_direnc:
+                st.info("Son 90 günde yeterli pivot noktası bulunamadı.")
+            else:
+                fig_dd = go.Figure()
+                fig_dd.add_trace(go.Scatter(x=veri.index[-90:], y=veri['Close'].iloc[-90:], name='Kapanış'))
+                for destek in guclu_destek:
+                    fig_dd.add_hline(y=destek['fiyat'], line=dict(color='green', width=2, dash='dot'),
+                                     annotation_text=f"Destek ({destek['sayi']})")
+                for direnc in guclu_direnc:
+                    fig_dd.add_hline(y=direnc['fiyat'], line=dict(color='red', width=2, dash='dot'),
+                                     annotation_text=f"Direnç ({direnc['sayi']})")
+                fig_dd.update_layout(height=500)
+                st.plotly_chart(fig_dd, use_container_width=True)
+                if guclu_destek:
+                    en_yakin_destek = min(guclu_destek, key=lambda x: abs(x['fiyat'] - son_kapanis))
+                    st.write(f"🟢 En yakın güçlü destek: **{en_yakin_destek['fiyat']:.2f}** TL ({en_yakin_destek['sayi']} dokunuş)")
+                if guclu_direnc:
+                    en_yakin_direnc = min(guclu_direnc, key=lambda x: abs(x['fiyat'] - son_kapanis))
+                    st.write(f"🔴 En yakın güçlü direnç: **{en_yakin_direnc['fiyat']:.2f}** TL ({en_yakin_direnc['sayi']} dokunuş)")
+
         with tab3:
             st.subheader("📋 Tüm İndikatör Değerleri")
             ind_son = ind_df.iloc[-1]
@@ -656,10 +715,8 @@ if st.session_state.secili_sembol:
             if teknik_puan is None:
                 st.warning("Henüz bir analiz yapılmadı.")
             else:
-                # Genel puan göstergesi
                 genel = teknik_puan['genel']
-                renk = 'green' if genel >= 7 else ('orange' if genel >= 4 else 'red')
-                st.markdown(f"### Genel Teknik Puan: **: {genel} / 10**")
+                st.markdown(f"### Genel Teknik Puan: **{genel} / 10**")
                 st.progress(genel / 10)
 
                 col_p1, col_p2 = st.columns(2)
