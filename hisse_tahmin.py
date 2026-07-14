@@ -95,10 +95,6 @@ SEMBOL_ISIM = {h["sembol"]: h["isim"] for h in HISSE_LISTESI}
 # Session state
 if "secili_sembol" not in st.session_state:
     st.session_state.secili_sembol = None
-if "secili_regresyon" not in st.session_state:
-    st.session_state.secili_regresyon = "Random Forest"
-if "secili_siniflandirma" not in st.session_state:
-    st.session_state.secili_siniflandirma = "Random Forest"
 
 st.set_page_config(page_title="Hisse Fiyat Tahmini Pro", layout="wide")
 st.title("📈 Hisse Senedi Fiyat Tahmin Uygulaması (Pro)")
@@ -500,31 +496,32 @@ if st.session_state.secili_sembol:
     col1, col2 = st.columns([1, 1])
     with col1:
         if st.button("🔄 Farklı hisse seç"):
-            for key in ["tahmin_gun", "tahmin_hafta", "olasilik", "ml_sonuc", "ind_df",
-                        "son_kapanis", "veri", "sim_islemler", "sim_metrikler", "sim_ind_sim",
-                        "kesişim_sonuc", "yon_tahmin", "teknik_puan", "destek_direnc"]:
-                st.session_state.pop(key, None)
+            for key in list(st.session_state.keys()):
+                if key not in ["secili_sembol"]:
+                    del st.session_state[key]
             st.session_state.secili_sembol = None
     with col2:
         tahmin_tarihi = st.date_input("Tahmin tarihi:",
                                       value=datetime.today(),
                                       max_value=datetime.today())
 
-    # Model seçimleri
+    # Model seçimleri (eski sonuçları temizleme eklendi)
+    def temizle_ml():
+        for key in ["ml_sonuc", "yon_tahmin"]:
+            st.session_state.pop(key, None)
+
     st.subheader("🤖 Makine Öğrenmesi Model Seçimi")
     col_m1, col_m2 = st.columns(2)
     with col_m1:
         reg_model = st.selectbox("Regresyon Modeli (Fiyat Aralığı)",
                                  ["Random Forest", "XGBoost", "LightGBM", "KNN", "SVM"],
-                                 index=0,
-                                 key="reg_model_select")
-        st.session_state.secili_regresyon = reg_model
+                                 key="reg_model_select",
+                                 on_change=temizle_ml)
     with col_m2:
         sinif_model = st.selectbox("Sınıflandırma Modeli (Yön Tahmini)",
                                    ["Random Forest", "XGBoost", "LightGBM", "Lojistik Regresyon", "KNN", "SVM"],
-                                   index=0,
-                                   key="sinif_model_select")
-        st.session_state.secili_siniflandirma = sinif_model
+                                   key="sinif_model_select",
+                                   on_change=temizle_ml)
 
     if st.button("📊 Tahmini Hesapla", type="primary"):
         with st.spinner("Hesaplanıyor..."):
@@ -544,9 +541,9 @@ if st.session_state.secili_sembol:
                         tahmin_gun = fiyat_aralik_tahmini(ind_df, son_kapanis, 1)
                         tahmin_hafta = fiyat_aralik_tahmini(ind_df, son_kapanis, 5)
                         olasilik = hedef_olasilik(veri, son_kapanis)
-                        ml_sonuc = ml_tahmin_araligi(ind_df, model_secimi=st.session_state.secili_regresyon)
+                        ml_sonuc = ml_tahmin_araligi(ind_df, model_secimi=st.session_state.reg_model_select)
                         kesişim = kesişim_dedektoru(ind_df)
-                        yon_tahmin = yon_tahmini_modeli(ind_df, model_secimi=st.session_state.secili_siniflandirma)
+                        yon_tahmin = yon_tahmini_modeli(ind_df, model_secimi=st.session_state.sinif_model_select)
                         teknik_puan = teknik_puanlama(ind_df)
                         guclu_destek, guclu_direnc = destek_direnc_bul(veri.tail(90))
 
@@ -620,13 +617,13 @@ if st.session_state.secili_sembol:
                       f"%{olasilik:.1f}")
 
             if ml_sonuc:
-                st.subheader(f"🤖 ML 5 Günlük Güven Aralığı ({st.session_state.secili_regresyon} %95)")
+                st.subheader(f"🤖 ML 5 Günlük Güven Aralığı ({st.session_state.reg_model_select} %95)")
                 st.metric("Tahmini Fiyat", f"{ml_sonuc['tahmini_fiyat']} TL")
                 st.write(f"**Alt sınır:** {ml_sonuc['alt_fiyat']} TL / **Üst sınır:** {ml_sonuc['ust_fiyat']} TL")
             else:
                 st.warning("ML güven aralığı için yeterli veri yok.")
 
-            st.subheader(f"🧠 Yön Tahmini Modeli ({st.session_state.secili_siniflandirma})")
+            st.subheader(f"🧠 Yön Tahmini Modeli ({st.session_state.sinif_model_select})")
             if yon_tahmin is None:
                 st.warning("Yön tahmini için yeterli veri yok (en az 200 gün).")
             else:
