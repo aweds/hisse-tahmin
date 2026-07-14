@@ -401,8 +401,7 @@ def destek_direnc_bul(df, pencere=5):
         if dusuk.iloc[i] == dusuk.iloc[i-pencere:i+pencere+1].min():
             pivot_dipler.append({'tarih': dusuk.index[i], 'fiyat': dusuk.iloc[i]})
 
-    # Seviyeleri grupla (birbirine yakın olanları birleştir)
-    tolerans = kapanis.iloc[-1] * 0.01  # %1 bant
+    tolerans = kapanis.iloc[-1] * 0.01
     destek_seviyeleri = []
     for dip in pivot_dipler:
         eklendi = False
@@ -427,7 +426,6 @@ def destek_direnc_bul(df, pencere=5):
         if not eklendi:
             direnc_seviyeleri.append({'fiyat': tepe['fiyat'], 'sayi': 1, 'tarihler': [tepe['tarih']]})
 
-    # Güçlü seviyeler (2 ve üzeri dokunuş) vurgulansın
     guclu_destek = [s for s in destek_seviyeleri if s['sayi'] >= 2]
     guclu_direnc = [s for s in direnc_seviyeleri if s['sayi'] >= 2]
     return guclu_destek, guclu_direnc
@@ -470,20 +468,24 @@ if st.session_state.secili_sembol:
                 st.session_state.pop(key, None)
             st.session_state.secili_sembol = None
     with col2:
-        tahmin_tarihi = st.date_input("Tahmin tarihi (dünün verisiyle):",
-                                      value=datetime.today() - timedelta(days=1))
+        # Bugünün tarihi varsayılan, en son verileri de alır
+        tahmin_tarihi = st.date_input("Tahmin tarihi:",
+                                      value=datetime.today(),
+                                      max_value=datetime.today())
 
     if st.button("📊 Tahmini Hesapla", type="primary"):
         with st.spinner("Hesaplanıyor..."):
             try:
+                # Sabit 1 yıllık (365 gün) veri çek
                 baslangic = tahmin_tarihi - timedelta(days=365)
                 veri = yf.download(secili, start=baslangic, end=tahmin_tarihi, progress=False)
                 if veri.empty:
                     st.error("Hisse bulunamadı.")
                 else:
+                    st.info(f"📦 {len(veri)} işlem günü verisi çekildi (1 yıllık).")
                     ind_df = tum_indikatorleri_hesapla(veri).dropna()
                     if len(ind_df) < 50:
-                        st.error("Yeterli veri yok.")
+                        st.error("Yeterli indikatör verisi hesaplanamadı (en az 50 gün gerekli).")
                     else:
                         son_kapanis = ind_df['Close'].iloc[-1]
                         tahmin_gun = fiyat_aralik_tahmini(ind_df, son_kapanis, 1)
@@ -493,7 +495,6 @@ if st.session_state.secili_sembol:
                         kesişim = kesişim_dedektoru(ind_df)
                         yon_tahmin = yon_tahmini_modeli(ind_df)
                         teknik_puan = teknik_puanlama(ind_df)
-                        # Destek/direnç için son 90 günlük veri yeterli
                         guclu_destek, guclu_direnc = destek_direnc_bul(veri.tail(90))
 
                         st.session_state["tahmin_gun"] = tahmin_gun
@@ -610,7 +611,6 @@ if st.session_state.secili_sembol:
             fig2.update_layout(xaxis_title="Hacim", yaxis_title="Fiyat", height=400)
             st.plotly_chart(fig2, use_container_width=True)
 
-            # ---- YENİ: Otomatik Destek/Direnç Seviyeleri ----
             st.subheader("🏗️ Otomatik Destek/Direnç Seviyeleri")
             if not guclu_destek and not guclu_direnc:
                 st.info("Son 90 günde yeterli pivot noktası bulunamadı.")
