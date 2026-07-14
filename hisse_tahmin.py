@@ -171,3 +171,4 @@ if st.button("Tahmini Hesapla"):
             
     except Exception as e:
         st.error(f"Hata oluştu: {e}")
+</details>
